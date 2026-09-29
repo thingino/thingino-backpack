@@ -33,9 +33,9 @@ verify-uboot = []
 log = "0.4"
 esp-idf-svc = "0.53"
 sha2 = "0.10"
-tdfu-core = { path = "../thingino-dfu-rs-espidf/crates/tdfu-core" }
-tdfu-usb = { path = "../thingino-dfu-rs-espidf/crates/tdfu-usb" }
-tdfu-daemon = { path = "../thingino-dfu-rs-espidf/crates/tdfu-daemon" }
+tdfu-core = { git = "https://github.com/thingino/thingino-dfu-rs", tag = "v2.1.0" }
+tdfu-usb = { git = "https://github.com/thingino/thingino-dfu-rs", tag = "v2.1.0" }
+tdfu-daemon = { git = "https://github.com/thingino/thingino-dfu-rs", tag = "v2.1.0" }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "io-util", "macros"] }
 # The USB backend and the daemon log through tracing; with no subscriber installed, its
 # `log` feature hands their events to the ESP logger.

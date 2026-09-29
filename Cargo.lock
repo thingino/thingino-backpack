@@ -1447,7 +1447,8 @@ dependencies = [
 
 [[package]]
 name = "tdfu-core"
-version = "2.0.1"
+version = "2.1.0"
+source = "git+https://github.com/thingino/thingino-dfu-rs?tag=v2.1.0#f7c5a14ac469a6981c22209b78b71c5e4f9b8a44"
 dependencies = [
  "tdfu-usb",
  "thiserror 2.0.21",
@@ -1455,7 +1456,8 @@ dependencies = [
 
 [[package]]
 name = "tdfu-daemon"
-version = "2.0.1"
+version = "2.1.0"
+source = "git+https://github.com/thingino/thingino-dfu-rs?tag=v2.1.0#f7c5a14ac469a6981c22209b78b71c5e4f9b8a44"
 dependencies = [
  "socket2",
  "tdfu-core",
@@ -1469,14 +1471,16 @@ dependencies = [
 
 [[package]]
 name = "tdfu-proto"
-version = "2.0.1"
+version = "2.1.0"
+source = "git+https://github.com/thingino/thingino-dfu-rs?tag=v2.1.0#f7c5a14ac469a6981c22209b78b71c5e4f9b8a44"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "tdfu-usb"
-version = "2.0.1"
+version = "2.1.0"
+source = "git+https://github.com/thingino/thingino-dfu-rs?tag=v2.1.0#f7c5a14ac469a6981c22209b78b71c5e4f9b8a44"
 dependencies = [
  "esp-idf-sys",
  "nusb",

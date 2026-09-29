@@ -70,9 +70,9 @@ Requirements:
   which has the Xtensa targets of the S2 and S3 and the P4's `riscv32imafc-esp-espidf`,
   plus `ldproxy` and `espflash` (`cargo install ldproxy espflash`).
 - ESP-IDF v5.5.5, at `~/esp/esp-idf-v5.5.5` by default (`env.sh` sets `IDF_PATH`).
-- [thingino-dfu-rs](https://github.com/thingino/thingino-dfu-rs) checked out next to this
-  repository as `thingino-dfu-rs-espidf`, on its `espidf-backend` branch, which holds the
-  ESP-IDF USB host backend until it is merged.
+
+Cargo fetches the daemon, the DFU core and the ESP-IDF USB host backend from
+[thingino-dfu-rs](https://github.com/thingino/thingino-dfu-rs) at its v2.1.0 release.
 
 ```sh
 ./image.sh          # ESP32-S3, images/: bootloader.bin, partition-table.bin, app.bin
@@ -131,6 +131,8 @@ thingino-dfu --host <host>.local:5050 -r dump.bin
 thingino-dfu --host <host>.local:5050 -w image.bin --verify
 ```
 
+The unit holds no loaders, so the client sends the pair with each bootstrap: that takes
+thingino-dfu 2.1.0 or later, and the web flasher at webflash.thingino.com does it too.
 IPv6 addresses go in brackets and quoted: `--host '[2001:db8::1]:5050'`. In the web
 flasher, choose remote mode and enter `<host>.local:5050`.
 
