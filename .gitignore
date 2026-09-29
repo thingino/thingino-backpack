@@ -1,0 +1,4 @@
+/target
+/.embuild
+*.bin
+!/loaders/**/*.bin

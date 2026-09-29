@@ -1,0 +1,29 @@
+[package]
+name = "thingino-backpack"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[[bin]]
+name = "backpack"
+path = "src/main.rs"
+harness = false
+
+[profile.release]
+opt-level = "s"
+debug = true
+
+[profile.dev]
+debug = true
+opt-level = "z"
+
+[dependencies]
+log = "0.4"
+esp-idf-svc = "0.53"
+sha2 = "0.10"
+tdfu-core = { path = "../thingino-dfu-rs-espidf/crates/tdfu-core" }
+tdfu-usb = { path = "../thingino-dfu-rs-espidf/crates/tdfu-usb" }
+
+[build-dependencies]
+embuild = "0.33"
