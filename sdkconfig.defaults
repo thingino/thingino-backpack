@@ -9,16 +9,13 @@ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# The partitions end at 3.1 MB, so a 4 MB image header lets one image boot on 4, 8 and
+# 16 MB modules alike.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
-# The ESP32-S3R8's embedded octal PSRAM. thingino-dfu pads a copy of U-Boot (~700 KB)
-# before sending it, far more than internal RAM holds; large mallocs land in PSRAM while
-# USB transfer buffers stay internal, where the OTG DMA can reach them.
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+# No PSRAM. Images stream through the unit, so nothing it does scales with them, and a
+# build that leaves PSRAM alone runs on every ESP32-S3 module whatever PSRAM it has.
+# `./image.sh psram` layers sdkconfig.psram on top for octal-PSRAM modules.
 
 # IPv6 first: SLAAC on top of the link-local address, and room for tokio's sockets.
 CONFIG_LWIP_IPV6_AUTOCONFIG=y

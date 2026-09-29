@@ -4,7 +4,7 @@
 #
 # `./image.sh <variant>` layers sdkconfig.<variant> over sdkconfig.defaults and builds in a
 # target directory of its own, so switching variants does not rebuild ESP-IDF each time:
-# `./image.sh nopsram` is for modules without PSRAM.
+# `./image.sh psram` is for modules with octal PSRAM.
 set -e
 cd "$(dirname "$0")"
 . ./env.sh
@@ -20,5 +20,5 @@ mkdir -p "$images"
 cp "$(ls -t "$out"/build/esp-idf-sys-*/out/build/bootloader/bootloader.bin | head -1)" "$images"/bootloader.bin
 "$HOME"/.espressif/python_env/idf5.5_py3.13_env/bin/python \
 	"$IDF_PATH/components/partition_table/gen_esp32part.py" partitions.csv "$images"/partition-table.bin >/dev/null
-espflash save-image --chip esp32s3 --flash-size 8mb "$out/backpack" "$images"/app.bin
+espflash save-image --chip esp32s3 --flash-size 4mb "$out/backpack" "$images"/app.bin
 ls -l "$images"

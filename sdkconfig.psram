@@ -1,0 +1,9 @@
+# Octal PSRAM, as on the ESP32-S3R8 (N8R8, N16R8 modules). Flashing does not need it; this
+# is for features that want the room. Large mallocs land in PSRAM, while USB transfer
+# buffers stay internal, where the OTG DMA reaches them. The PSRAM mode is fixed at build
+# time, and this one is octal.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y

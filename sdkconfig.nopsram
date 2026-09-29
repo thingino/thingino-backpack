@@ -1,2 +1,0 @@
-# A module without PSRAM: everything runs from the 512 KB of internal SRAM.
-CONFIG_SPIRAM=n
