@@ -18,7 +18,7 @@ use tdfu_core::addr::Kseg1;
 use tdfu_core::bootrom;
 use tdfu_core::clock::BlockingClock;
 use tdfu_core::ops::{self, Stage};
-use tdfu_core::{AltSel, Progress};
+use tdfu_core::{AltSel, Phase, Progress};
 use tdfu_usb::{vid, ControlIn, ControlType, Discovered, LocalUsbBackend, LocalUsbTransport, Recipient};
 
 use crate::usbhost::{EspTransport, UsbHost};
@@ -115,9 +115,11 @@ fn bootstrap_verified(dev: &EspTransport, clock: &BlockingClock) -> Result<(), S
     let stage1 = bootrom::pad_stage1(STAGE1);
     let uboot = bootrom::pad_stage1(UBOOT);
     let mut progress = progress_logger();
+    progress(Progress::Phase(Phase::Stage1));
     block_on(bootrom::load_to_memory(dev, clock, bootrom::SPL_LOAD_ADDR, &stage1, &mut progress)).map_err(err)?;
     block_on(bootrom::prog_stage1(dev, clock, bootrom::SPL_ENTRY_ADDR)).map_err(err)?;
     std::thread::sleep(ops::POST_STAGE1_SETTLE);
+    progress(Progress::Phase(Phase::UBoot));
     block_on(bootrom::load_to_memory(dev, clock, bootrom::UBOOT_ADDR, &uboot, &mut progress)).map_err(err)?;
     block_on(bootrom::flush_cache(dev, clock)).map_err(err)?;
 

@@ -394,6 +394,27 @@ fn endpoint_mps(config: &[u8], interface: u8, address: u8) -> Option<usize> {
     None
 }
 
+/// Every endpoint address in alternate setting 0 of `interface`.
+fn interface_endpoints(config: &[u8], interface: u8) -> Vec<u8> {
+    let mut current = None;
+    let mut found = Vec::new();
+    let mut rest = config;
+    while rest.len() >= 2 {
+        let len = usize::from(rest[0]);
+        if len < 2 || len > rest.len() {
+            break;
+        }
+        let desc = &rest[..len];
+        match desc[1] {
+            0x04 if len >= 4 => current = Some((desc[2], desc[3])),
+            0x05 if len >= 3 && current == Some((interface, 0)) => found.push(desc[2]),
+            _ => {}
+        }
+        rest = &rest[len..];
+    }
+    found
+}
+
 fn request_type(direction: Direction, control_type: ControlType, recipient: Recipient) -> u8 {
     let direction = match direction {
         Direction::In => 0x80,
@@ -471,6 +492,7 @@ impl LocalUsbBackend for UsbHost {
             mps0: described.mps0,
             configuration: described.configuration,
             claim: RefCell::new(None),
+            idf_claimed: Cell::new(None),
             ep0_inflight: RefCell::new(Arc::new(AtomicUsize::new(0))),
         })
     }
@@ -498,6 +520,9 @@ pub struct EspTransport {
     mps0: usize,
     configuration: u8,
     claim: RefCell<Option<Claim>>,
+    /// The interface claimed from IDF, which outlives the logical `claim`: see
+    /// `claim_interface`.
+    idf_claimed: Cell<Option<u8>>,
     /// Replaced on `reset`, so a deferred old handle keeps its own count.
     ep0_inflight: RefCell<Arc<AtomicUsize>>,
 }
@@ -566,11 +591,39 @@ impl EspTransport {
 
     /// Host side only: halting and flushing completes whatever is queued as cancelled.
     fn cancel(&self, endpoint: BulkEndpoint) {
+        self.cancel_address(endpoint.address());
+    }
+
+    fn cancel_address(&self, address: u8) {
         let dev = self.dev();
         unsafe {
-            sys::usb_host_endpoint_halt(dev, endpoint.address());
-            sys::usb_host_endpoint_flush(dev, endpoint.address());
-            sys::usb_host_endpoint_clear(dev, endpoint.address());
+            sys::usb_host_endpoint_halt(dev, address);
+            sys::usb_host_endpoint_flush(dev, address);
+            sys::usb_host_endpoint_clear(dev, address);
+        }
+    }
+
+    fn claim_idf(&self, interface: u8) -> Result<(), UsbError> {
+        let err = unsafe { sys::usb_host_interface_claim(self.shared.client(), self.dev(), interface, 0) };
+        if err == ERR_INVALID_STATE {
+            return Err(UsbError::new(UsbErrorKind::Busy, Pipe::Device));
+        }
+        check(err, Pipe::Device, "usb_host_interface_claim")?;
+        self.idf_claimed.set(Some(interface));
+        Ok(())
+    }
+
+    fn release_idf(&self) {
+        let Some(interface) = self.idf_claimed.take() else {
+            return;
+        };
+        let client = self.shared.client();
+        if unsafe { sys::usb_host_interface_release(client, self.dev(), interface) } == ERR_INVALID_STATE {
+            // Abandoned transfers still queued on the interface's endpoints.
+            for address in interface_endpoints(&self.descriptors.config_descriptor, interface) {
+                self.cancel_address(address);
+            }
+            unsafe { sys::usb_host_interface_release(client, self.dev(), interface) };
         }
     }
 
@@ -584,15 +637,8 @@ impl EspTransport {
 
     /// Best effort, for teardown paths that have no one to report to.
     fn release_claim(&self) {
-        let Some(claim) = self.claim.borrow_mut().take() else {
-            return;
-        };
-        let client = self.shared.client();
-        if unsafe { sys::usb_host_interface_release(client, self.dev(), claim.interface) } == ERR_INVALID_STATE {
-            // Abandoned transfers still queued on the interface's endpoints.
-            claim.endpoints().for_each(|endpoint| self.cancel(endpoint));
-            unsafe { sys::usb_host_interface_release(client, self.dev(), claim.interface) };
-        }
+        self.claim.borrow_mut().take();
+        self.release_idf();
     }
 
     fn close(&self) {
@@ -740,27 +786,25 @@ impl LocalUsbTransport for EspTransport {
             bulk_in: locate(spec.bulk_in)?,
             bulk_out: locate(spec.bulk_out)?,
         };
-        let err = unsafe { sys::usb_host_interface_claim(self.shared.client(), self.dev(), spec.interface, 0) };
-        if err == ERR_INVALID_STATE {
-            return Err(UsbError::new(UsbErrorKind::Busy, Pipe::Device));
+        // An IDF claim allocates fresh pipes whose data toggles start at DATA0, while the
+        // device's endpoints keep theirs; only SET_CONFIGURATION, SET_INTERFACE or a cleared
+        // halt resets them. thingino-dfu claims and releases around every operation, which
+        // on Linux leaves the toggles alone. Mapped literally onto IDF, the bootrom drops the
+        // first packet after every re-claim as a retransmission. So the IDF claim is taken
+        // once and kept, and `release_interface` only ends the logical claim.
+        if self.idf_claimed.get() != Some(spec.interface) {
+            self.release_idf();
+            self.claim_idf(spec.interface)?;
         }
-        check(err, Pipe::Device, "usb_host_interface_claim")?;
         *self.claim.borrow_mut() = Some(claim);
         Ok(())
     }
 
     async fn release_interface(&self, interface: u8) -> Result<(), UsbError> {
-        let Some(claim) = self.claimed().filter(|claim| claim.interface == interface) else {
-            return Ok(());
-        };
-        let client = self.shared.client();
-        let mut err = unsafe { sys::usb_host_interface_release(client, self.dev(), interface) };
-        if err == ERR_INVALID_STATE {
-            claim.endpoints().for_each(|endpoint| self.cancel(endpoint));
-            err = unsafe { sys::usb_host_interface_release(client, self.dev(), interface) };
+        if self.claimed().is_some_and(|claim| claim.interface == interface) {
+            *self.claim.borrow_mut() = None;
         }
-        *self.claim.borrow_mut() = None;
-        check(err, Pipe::Device, "usb_host_interface_release")
+        Ok(())
     }
 
     async fn set_alt_setting(&self, interface: u8, alt: u8) -> Result<(), UsbError> {
@@ -783,29 +827,35 @@ impl LocalUsbTransport for EspTransport {
     }
 
     async fn clear_halt(&self, endpoint: BulkEndpoint) -> Result<(), UsbError> {
-        if self.claimed().is_none_or(|claim| !claim.endpoints().any(|declared| declared == endpoint)) {
+        let Some(claim) = self.claimed().filter(|claim| claim.endpoints().any(|declared| declared == endpoint)) else {
             return Err(Self::not_claimed(Pipe::Bulk(endpoint)));
+        };
+        // CLEAR_FEATURE(ENDPOINT_HALT) puts the device's toggle back to DATA0, and IDF can
+        // only do the same for the host by re-claiming, which resets every endpoint of the
+        // interface. So every endpoint is cleared on both sides, keeping the pairs in step.
+        claim.endpoints().for_each(|declared| self.cancel(declared));
+        for declared in claim.endpoints() {
+            self.control(
+                Direction::Out,
+                ControlType::Standard,
+                Recipient::Endpoint,
+                0x01,
+                0,
+                u16::from(declared.address()),
+                &[],
+                0,
+                REQUEST_TIMEOUT,
+            )?;
         }
-        self.cancel(endpoint);
-        // CLEAR_FEATURE(ENDPOINT_HALT): the host-side clear above never reaches the device.
-        self.control(
-            Direction::Out,
-            ControlType::Standard,
-            Recipient::Endpoint,
-            0x01,
-            0,
-            u16::from(endpoint.address()),
-            &[],
-            0,
-            REQUEST_TIMEOUT,
-        )
-        .map(drop)
+        self.release_idf();
+        self.claim_idf(claim.interface)
     }
 
     async fn reset(&self) -> Result<(), UsbError> {
         let client = self.shared.client();
         let old = self.dev();
         self.release_claim();
+        self.idf_claimed.set(None);
         // No device-reset call exists in IDF 5.5. Powering the root port off and on bus-resets
         // and re-enumerates the device without cutting VBUS, and it is also the only thing
         // that completes an EP0 transfer the device stopped answering. The handle is closed
