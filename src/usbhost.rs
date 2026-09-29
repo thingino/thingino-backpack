@@ -12,12 +12,13 @@ use core::ptr;
 use core::time::Duration;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 
 use esp_idf_svc::sys;
-use log::warn;
+use log::{info, warn};
 use tdfu_usb::{
     BulkEndpoint, ControlIn, ControlOut, ControlType, DeviceDescriptors, Direction, Discovered, InterfaceSpec,
     LocalUsbBackend, LocalUsbTransport, Pipe, Recipient, UsbError, UsbErrorKind,
@@ -53,6 +54,10 @@ struct Shared {
 struct HostState {
     /// Handles the library reported gone that are not closed yet.
     gone: Vec<usize>,
+    /// Devices whose close waits for abandoned EP0 transfers: IDF asserts when a device
+    /// is closed with a control transfer in flight, and such a transfer only completes
+    /// once the device leaves the bus.
+    deferred: Vec<Deferred>,
     /// The library refuses a second open from the same client, so `list` answers for the
     /// devices open right now from here.
     open: HashMap<u8, DeviceDescriptors>,
@@ -83,14 +88,42 @@ impl Shared {
         state.gone.retain(|&handle| handle != dev as usize);
         state.open.remove(&address);
     }
+
+    /// Closes deferred devices whose abandoned transfers have all completed.
+    fn reap(&self) {
+        let mut state = self.state.lock().unwrap();
+        let HostState { gone, deferred, open } = &mut *state;
+        deferred.retain(|entry| {
+            if entry.ep0_inflight.load(Ordering::SeqCst) > 0 {
+                return true;
+            }
+            unsafe { sys::usb_host_device_close(self.client(), entry.handle as DevHandle) };
+            gone.retain(|&handle| handle != entry.handle);
+            open.remove(&entry.address);
+            false
+        });
+    }
+}
+
+struct Deferred {
+    handle: usize,
+    address: u8,
+    ep0_inflight: Arc<AtomicUsize>,
 }
 
 unsafe extern "C" fn client_event(msg: *const sys::usb_host_client_event_msg_t, arg: *mut c_void) {
     let shared = &*(arg as *const Shared);
     let msg = &*msg;
     let mut state = shared.state.lock().unwrap();
-    if msg.event == sys::usb_host_client_event_t_USB_HOST_CLIENT_EVENT_DEV_GONE {
-        state.gone.push(msg.__bindgen_anon_1.dev_gone.dev_hdl as usize);
+    match msg.event {
+        sys::usb_host_client_event_t_USB_HOST_CLIENT_EVENT_NEW_DEV => {
+            info!("usb: new device at address {}", msg.__bindgen_anon_1.new_dev.address);
+        }
+        sys::usb_host_client_event_t_USB_HOST_CLIENT_EVENT_DEV_GONE => {
+            info!("usb: an open device is gone");
+            state.gone.push(msg.__bindgen_anon_1.dev_gone.dev_hdl as usize);
+        }
+        _ => {}
     }
     shared.changed.notify_all();
 }
@@ -181,6 +214,8 @@ enum Slot {
 struct Completion {
     slot: Mutex<Slot>,
     done: Condvar,
+    /// The device's count of abandoned EP0 transfers, for control transfers only.
+    ep0_inflight: Option<Arc<AtomicUsize>>,
 }
 
 /// Runs on the client task. An in-flight transfer owns one reference to its completion.
@@ -189,6 +224,9 @@ unsafe extern "C" fn transfer_done(transfer: *mut sys::usb_transfer_t) {
     let mut slot = completion.slot.lock().unwrap();
     if *slot == Slot::Abandoned {
         sys::usb_host_transfer_free(transfer);
+        if let Some(count) = &completion.ep0_inflight {
+            count.fetch_sub(1, Ordering::SeqCst);
+        }
     } else {
         *slot = Slot::Done;
         completion.done.notify_all();
@@ -203,7 +241,7 @@ struct Transfer {
 }
 
 impl Transfer {
-    fn alloc(len: usize, pipe: Pipe) -> Result<Self, UsbError> {
+    fn alloc(len: usize, pipe: Pipe, ep0_inflight: Option<Arc<AtomicUsize>>) -> Result<Self, UsbError> {
         let mut raw = ptr::null_mut();
         check(unsafe { sys::usb_host_transfer_alloc(len, 0, &mut raw) }, pipe, "usb_host_transfer_alloc")?;
         Ok(Self {
@@ -211,6 +249,7 @@ impl Transfer {
             completion: Arc::new(Completion {
                 slot: Mutex::new(Slot::Waiting),
                 done: Condvar::new(),
+                ep0_inflight,
             }),
             owned: true,
         })
@@ -249,6 +288,9 @@ impl Transfer {
             let now = Instant::now();
             if now >= deadline {
                 *slot = Slot::Abandoned;
+                if let Some(count) = &self.completion.ep0_inflight {
+                    count.fetch_add(1, Ordering::SeqCst);
+                }
                 self.owned = false;
                 return Err(UsbError::new(UsbErrorKind::Timeout, pipe).with_timeout(timeout));
             }
@@ -376,6 +418,7 @@ impl LocalUsbBackend for UsbHost {
     type DeviceId = u8;
 
     async fn list(&self) -> Result<Vec<Discovered<u8>>, UsbError> {
+        self.shared.reap();
         let mut addresses = [0u8; 16];
         let mut count = 0;
         check(
@@ -428,6 +471,7 @@ impl LocalUsbBackend for UsbHost {
             mps0: described.mps0,
             configuration: described.configuration,
             claim: RefCell::new(None),
+            ep0_inflight: RefCell::new(Arc::new(AtomicUsize::new(0))),
         })
     }
 }
@@ -454,6 +498,8 @@ pub struct EspTransport {
     mps0: usize,
     configuration: u8,
     claim: RefCell<Option<Claim>>,
+    /// Replaced on `reset`, so a deferred old handle keeps its own count.
+    ep0_inflight: RefCell<Arc<AtomicUsize>>,
 }
 
 impl EspTransport {
@@ -490,7 +536,7 @@ impl EspTransport {
                 out.len(),
             ),
         };
-        let mut transfer = Transfer::alloc(SETUP_LEN + data_len, pipe)?;
+        let mut transfer = Transfer::alloc(SETUP_LEN + data_len, pipe, Some(self.ep0_inflight.borrow().clone()))?;
         let buffer = transfer.buffer();
         buffer[0] = request_type(direction, control_type, recipient);
         buffer[1] = request;
@@ -550,16 +596,23 @@ impl EspTransport {
     }
 
     fn close(&self) {
-        let client = self.shared.client();
         let dev = self.dev();
         self.release_claim();
-        let err = unsafe { sys::usb_host_device_close(client, dev) };
+        let ep0_inflight = self.ep0_inflight.borrow().clone();
+        if ep0_inflight.load(Ordering::SeqCst) > 0 {
+            warn!("address {}: a control transfer is still in flight; closing once it completes", self.address.get());
+            self.shared.state.lock().unwrap().deferred.push(Deferred {
+                handle: dev as usize,
+                address: self.address.get(),
+                ep0_inflight,
+            });
+            return;
+        }
+        let err = unsafe { sys::usb_host_device_close(self.shared.client(), dev) };
+        self.shared.forget(dev, self.address.get());
         if err != OK {
-            // An abandoned EP0 transfer still in flight; the handle leaks until the device
-            // leaves the bus.
             warn!("closing address {}: {}", self.address.get(), err_name(err));
         }
-        self.shared.forget(dev, self.address.get());
     }
 }
 
@@ -606,7 +659,7 @@ impl LocalUsbTransport for EspTransport {
         let pipe = Pipe::Bulk(endpoint);
         let mut sent = 0;
         for chunk in data.chunks(CHUNK) {
-            let mut transfer = Transfer::alloc(chunk.len(), pipe)?;
+            let mut transfer = Transfer::alloc(chunk.len(), pipe, None)?;
             transfer.buffer()[..chunk.len()].copy_from_slice(chunk);
             transfer.prepare(self.dev(), endpoint.address(), chunk.len());
             if let Err(err) =
@@ -638,7 +691,7 @@ impl LocalUsbTransport for EspTransport {
         while out.len() < len {
             let want = (len - out.len()).min(CHUNK);
             let request = want.div_ceil(mps) * mps;
-            let mut transfer = Transfer::alloc(request, pipe)?;
+            let mut transfer = Transfer::alloc(request, pipe, None)?;
             transfer.prepare(self.dev(), endpoint.address(), request);
             if let Err(err) =
                 transfer.submit_and_wait(|raw| unsafe { sys::usb_host_transfer_submit(raw) }, timeout, pipe)
@@ -759,8 +812,21 @@ impl LocalUsbTransport for EspTransport {
         // only once the library reports it gone: before that, such a transfer blocks the close.
         check(unsafe { sys::usb_host_lib_set_root_port_power(false) }, Pipe::Device, "root port off")?;
         self.shared.wait_until(DEVICE_GONE_TIMEOUT, |state| state.gone.contains(&(old as usize)));
-        unsafe { sys::usb_host_device_close(client, old) };
-        self.shared.forget(old, self.address.get());
+        let ep0_inflight = self.ep0_inflight.replace(Arc::new(AtomicUsize::new(0)));
+        let drained = Instant::now() + DEVICE_GONE_TIMEOUT;
+        while ep0_inflight.load(Ordering::SeqCst) > 0 && Instant::now() < drained {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if ep0_inflight.load(Ordering::SeqCst) == 0 {
+            unsafe { sys::usb_host_device_close(client, old) };
+            self.shared.forget(old, self.address.get());
+        } else {
+            self.shared.state.lock().unwrap().deferred.push(Deferred {
+                handle: old as usize,
+                address: self.address.get(),
+                ep0_inflight,
+            });
+        }
         check(unsafe { sys::usb_host_lib_set_root_port_power(true) }, Pipe::Device, "root port on")?;
 
         let want = (self.descriptors.vendor_id, self.descriptors.product_id);

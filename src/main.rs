@@ -14,12 +14,14 @@ use std::time::Instant;
 use esp_idf_svc::sys;
 use log::{error, info, warn};
 use sha2::{Digest, Sha256};
+use tdfu_core::addr::Kseg1;
+use tdfu_core::bootrom;
 use tdfu_core::clock::BlockingClock;
 use tdfu_core::ops::{self, Stage};
 use tdfu_core::{AltSel, Progress};
-use tdfu_usb::{vid, Discovered, LocalUsbBackend};
+use tdfu_usb::{vid, ControlIn, ControlType, Discovered, LocalUsbBackend, LocalUsbTransport, Recipient};
 
-use crate::usbhost::UsbHost;
+use crate::usbhost::{EspTransport, UsbHost};
 
 static STAGE1: &[u8] = include_bytes!("../loaders/t31x/tpl.bin");
 static UBOOT: &[u8] = include_bytes!("../loaders/t31x/uboot.bin");
@@ -27,6 +29,7 @@ static UBOOT: &[u8] = include_bytes!("../loaders/t31x/uboot.bin");
 /// The test camera's flash: the random image written to it over USB/IP on 2026-09-28.
 const EXPECTED_SHA256: &str = "a1ea2d5956e6d5c0772c9aacab10d56002b1ba2c910120a177861bff31dc47d2";
 const GADGET_TIMEOUT: Duration = Duration::from_secs(30);
+const READBACK_CHUNK: usize = 16 * 1024;
 
 fn main() {
     sys::link_patches();
@@ -35,36 +38,52 @@ fn main() {
     let job = std::thread::Builder::new()
         .name("dfu".into())
         .stack_size(64 * 1024)
-        .spawn(run)
+        .spawn(serve)
         .expect("spawning the dfu task");
-    match job.join() {
-        Ok(Ok(())) => info!("done"),
-        Ok(Err(err)) => error!("failed: {err}"),
-        Err(_) => error!("the dfu task panicked"),
+    if let Err(err) = job.join().unwrap_or_else(|_| Err("the dfu task panicked".into())) {
+        error!("{err}");
     }
     loop {
         std::thread::sleep(Duration::from_secs(3600));
     }
 }
 
-fn run() -> Result<(), String> {
+/// One run per camera: replugging it (or power-cycling it) starts the next.
+fn serve() -> Result<(), String> {
     let host = UsbHost::install().map_err(|err| err.to_string())?;
-    let clock = BlockingClock;
     heap("start");
+    loop {
+        match attempt(&host) {
+            Ok(()) => info!("done"),
+            Err(err) => error!("failed: {err}"),
+        }
+        info!("waiting for the camera to leave the bus; replug it to run again");
+        while block_on(host.list()).map_err(|err| err.to_string())?.iter().any(|dev| vid::is_ingenic(dev.descriptors.vendor_id)) {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
 
+fn attempt(host: &UsbHost) -> Result<(), String> {
+    let clock = BlockingClock;
     info!("waiting for an Ingenic device on the OTG port");
-    let (mut id, stage) = wait_for(&host, None, None)?;
+    let (mut id, stage) = wait_for(host, None, None)?;
     if stage == Stage::Bootrom {
         let dev = block_on(host.open(&id)).map_err(|err| err.to_string())?;
         let started = Instant::now();
         let detection = block_on(ops::detect(&dev, &clock)).map_err(|err| err.to_string())?;
         info!("detected in {:?}: {detection:?}", started.elapsed());
         let started = Instant::now();
-        block_on(ops::bootstrap(&dev, &clock, STAGE1, UBOOT, &mut progress_logger()))
-            .map_err(|err| err.to_string())?;
+        bootstrap_verified(&dev, &clock)?;
         drop(dev);
         let sent = started.elapsed();
-        (id, _) = wait_for(&host, Some(Stage::Gadget), Some(GADGET_TIMEOUT))?;
+        match wait_for(host, Some(Stage::Gadget), Some(GADGET_TIMEOUT)) {
+            Ok((gadget, _)) => id = gadget,
+            Err(err) => {
+                still_answering(host, id);
+                return Err(err);
+            }
+        }
         info!("bootstrap: loaders sent in {sent:?}, gadget up {:?} after the start", started.elapsed());
     }
 
@@ -86,6 +105,78 @@ fn run() -> Result<(), String> {
     }
     heap("end");
     Ok(())
+}
+
+/// `ops::bootstrap`, with U-Boot read back out of DDR between the cache flush and the
+/// jump. The readback goes through the uncached kseg1 alias and only after `FLUSH_CACHE`:
+/// before it, the image can still sit in the D-cache and DDR would compare stale.
+fn bootstrap_verified(dev: &EspTransport, clock: &BlockingClock) -> Result<(), String> {
+    let err = |err: tdfu_core::Error| err.to_string();
+    let stage1 = bootrom::pad_stage1(STAGE1);
+    let uboot = bootrom::pad_stage1(UBOOT);
+    let mut progress = progress_logger();
+    block_on(bootrom::load_to_memory(dev, clock, bootrom::SPL_LOAD_ADDR, &stage1, &mut progress)).map_err(err)?;
+    block_on(bootrom::prog_stage1(dev, clock, bootrom::SPL_ENTRY_ADDR)).map_err(err)?;
+    std::thread::sleep(ops::POST_STAGE1_SETTLE);
+    block_on(bootrom::load_to_memory(dev, clock, bootrom::UBOOT_ADDR, &uboot, &mut progress)).map_err(err)?;
+    block_on(bootrom::flush_cache(dev, clock)).map_err(err)?;
+
+    let started = Instant::now();
+    block_on(bootrom::claim(dev)).map_err(err)?;
+    let mut mismatch = None;
+    for (index, expected) in uboot.chunks(READBACK_CHUNK).enumerate() {
+        let offset = index * READBACK_CHUNK;
+        let addr = Kseg1::from_phys(bootrom::UBOOT_ADDR + offset as u32);
+        let got = block_on(bootrom::read_memory(dev, clock, addr, expected.len())).map_err(err)?;
+        if let Some(at) = got.iter().zip(expected).position(|(got, want)| got != want) {
+            let bad = got.iter().zip(expected).filter(|(got, want)| got != want).count();
+            let end = (at + 16).min(expected.len());
+            mismatch = Some(format!(
+                "U-Boot differs in DDR at +{:#x} ({bad} of {} bytes in that chunk): got {:02x?}, want {:02x?}",
+                offset + at,
+                expected.len(),
+                &got[at..end],
+                &expected[at..end]
+            ));
+            break;
+        }
+    }
+    block_on(bootrom::release(dev)).map_err(err)?;
+    if let Some(mismatch) = mismatch {
+        return Err(mismatch);
+    }
+    info!("U-Boot verified in DDR: {} bytes read back in {:?}", uboot.len(), started.elapsed());
+
+    block_on(bootrom::prog_stage2(dev, clock, bootrom::UBOOT_ADDR)).map_err(err)?;
+    info!("U-Boot starting; the device will re-enumerate in DFU mode");
+    Ok(())
+}
+
+/// After a bootstrap with no gadget: does the old device still answer on EP0? An answer
+/// means the bootrom never jumped; silence means the SoC jumped and stopped serving USB
+/// without dropping off the bus.
+fn still_answering(host: &UsbHost, id: u8) {
+    let listed = block_on(host.list()).unwrap_or_default();
+    if !listed.iter().any(|dev| dev.id == id) {
+        info!("address {id} is no longer listed");
+        return;
+    }
+    let Ok(dev) = block_on(host.open(&id)) else {
+        info!("address {id} is listed but cannot be opened");
+        return;
+    };
+    let request = ControlIn {
+        control_type: ControlType::Standard,
+        recipient: Recipient::Device,
+        request: 0x06,
+        value: 0x0100,
+        index: 0,
+        len: 18,
+    };
+    match block_on(dev.control_in(request, Duration::from_secs(1))) {
+        Ok(desc) => info!("address {id} still answers GET_DESCRIPTOR ({} bytes): the bootrom never jumped", desc.len()),
+        Err(err) => info!("address {id} does not answer ({err}): the SoC jumped and hung with USB still attached"),
+    }
 }
 
 /// Polls until an Ingenic device in `want` (any stage when `None`) is on the bus.
