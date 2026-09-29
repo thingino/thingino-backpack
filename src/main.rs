@@ -1,53 +1,46 @@
-//! Backpack spike: thingino-dfu's core driving a camera from the ESP32-S3 itself. Waits
-//! for an Ingenic device on the OTG port, bootstraps it if it is in the bootrom, then reads
-//! the whole flash over DFU and logs its sha256. No network is involved.
+//! thingino-backpack: the thingino-dfu daemon (`dfu-remote`) on an ESP32-S3.
+//!
+//! The same tdfu-daemon library a Linux host runs, served over Wi-Fi, with the camera on
+//! the OTG port driven by the ESP-IDF USB host backend. `thingino-dfu --host <backpack>`
+//! and the browser flasher's remote mode talk to it unchanged.
 
-mod usbhost;
-
-use core::future::Future;
-use core::pin::pin;
-use core::task::{Context, Poll, Waker};
+use core::sync::atomic::{AtomicPtr, Ordering};
 use core::time::Duration;
-use std::io::Write;
-use std::time::Instant;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
+use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::hal::modem::Modem;
+use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::handle::RawHandle;
+use esp_idf_svc::io::vfs::MountedEventfs;
+use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 use esp_idf_svc::sys;
-use log::{error, info, warn};
-use sha2::{Digest, Sha256};
-#[cfg(feature = "verify-uboot")]
-use tdfu_core::addr::Kseg1;
-#[cfg(feature = "verify-uboot")]
-use tdfu_core::bootrom;
-use tdfu_core::clock::BlockingClock;
-use tdfu_core::ops::{self, Stage};
-#[cfg(feature = "verify-uboot")]
-use tdfu_core::Phase;
-use tdfu_core::{AltSel, Progress};
-use tdfu_usb::{vid, ControlIn, ControlType, Discovered, LocalUsbBackend, LocalUsbTransport, Recipient};
+use esp_idf_svc::wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi};
+use log::{error, info};
+use tdfu_daemon::auth::Auth;
+use tdfu_daemon::commands::state::{DaemonState, ReadStaging};
+use tdfu_daemon::serve::{serve, Signals};
+use tdfu_daemon::transport::{Origins, Timeouts};
+use tdfu_daemon::{listen, TokioClock, DEFAULT_PORT};
 
-#[cfg(feature = "verify-uboot")]
-use crate::usbhost::EspTransport;
-use crate::usbhost::UsbHost;
+use thingino_backpack::usbhost::UsbHost;
 
-static STAGE1: &[u8] = include_bytes!("../loaders/t31x/tpl.bin");
-static UBOOT: &[u8] = include_bytes!("../loaders/t31x/uboot.bin");
+/// Where the daemon would look for loaders. Deliberately empty: the client streams the
+/// loader pair with BOOTSTRAP, so nothing is stored on the unit.
+const NO_FIRMWARE_DIR: &str = "/no-loaders";
 
-/// The test camera's flash: the random image written to it over USB/IP on 2026-09-28.
-const EXPECTED_SHA256: &str = "a1ea2d5956e6d5c0772c9aacab10d56002b1ba2c910120a177861bff31dc47d2";
-const GADGET_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(feature = "verify-uboot")]
-const READBACK_CHUNK: usize = 16 * 1024;
+/// Request payloads over this are streamed rather than held. A streamed BOOTSTRAP still
+/// holds its stage-1 image whole, so this has to cover every SPL; A1N's, the largest, is
+/// 34 KB.
+const STREAM_ABOVE: u32 = 64 * 1024;
+
+/// The daemon thread's FreeRTOS handle, for the memory report's stack high-water mark.
+static DAEMON_TASK: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
 
 fn main() {
     sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
-    // The operations are deep async state machines; they get a large stack of their own.
-    let job = std::thread::Builder::new()
-        .name("dfu".into())
-        .stack_size(64 * 1024)
-        .spawn(serve)
-        .expect("spawning the dfu task");
-    if let Err(err) = job.join().unwrap_or_else(|_| Err("the dfu task panicked".into())) {
+    if let Err(err) = run() {
         error!("{err}");
     }
     loop {
@@ -55,223 +48,127 @@ fn main() {
     }
 }
 
-/// One run per camera: replugging it (or power-cycling it) starts the next.
-fn serve() -> Result<(), String> {
+fn run() -> Result<(), String> {
+    // tokio's reactor (mio) wakes itself through an eventfd.
+    let _eventfs = MountedEventfs::mount(4).map_err(|err| format!("eventfd: {err}"))?;
+    let peripherals = Peripherals::take().map_err(|err| err.to_string())?;
+    let sysloop = EspSystemEventLoop::take().map_err(|err| err.to_string())?;
+    let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
+    let _wifi = connect_wifi(peripherals.modem, sysloop, nvs)?;
     let host = UsbHost::install().map_err(|err| err.to_string())?;
-    heap("start");
-    loop {
-        match attempt(&host) {
-            Ok(()) => info!("done"),
-            Err(err) => error!("failed: {err}"),
-        }
-        info!("waiting for the camera to leave the bus; replug it to run again");
-        while block_on(host.list()).map_err(|err| err.to_string())?.iter().any(|dev| vid::is_ingenic(dev.descriptors.vendor_id)) {
-            std::thread::sleep(Duration::from_millis(250));
-        }
-    }
-}
-
-fn attempt(host: &UsbHost) -> Result<(), String> {
-    let clock = BlockingClock;
-    info!("waiting for an Ingenic device on the OTG port");
-    let (mut id, stage) = wait_for(host, None, None)?;
-    if stage == Stage::Bootrom {
-        let dev = block_on(host.open(&id)).map_err(|err| err.to_string())?;
-        let started = Instant::now();
-        let detection = block_on(ops::detect(&dev, &clock)).map_err(|err| err.to_string())?;
-        info!("detected in {:?}: {detection:?}", started.elapsed());
-        let started = Instant::now();
-        #[cfg(feature = "verify-uboot")]
-        bootstrap_verified(&dev, &clock)?;
-        #[cfg(not(feature = "verify-uboot"))]
-        block_on(ops::bootstrap(&dev, &clock, STAGE1, UBOOT, &mut progress_logger()))
-            .map_err(|err| err.to_string())?;
-        drop(dev);
-        let sent = started.elapsed();
-        match wait_for(host, Some(Stage::Gadget), Some(GADGET_TIMEOUT)) {
-            Ok((gadget, _)) => id = gadget,
-            Err(err) => {
-                still_answering(host, id);
-                return Err(err);
-            }
-        }
-        info!("bootstrap: loaders sent in {sent:?}, gadget up {:?} after the start", started.elapsed());
-    }
-
-    let dev = block_on(host.open(&id)).map_err(|err| err.to_string())?;
-    let dfu = block_on(ops::probe(&dev, &clock)).map_err(|err| err.to_string())?;
-    info!("{dfu:?}");
-    heap("before read");
-    let mut sink = HashSink::default();
-    let started = Instant::now();
-    let bytes = block_on(ops::read(&dev, &clock, &AltSel::Default, None, &mut sink, &mut progress_logger()))
+    memory_report("after Wi-Fi and USB host");
+    std::thread::Builder::new()
+        .name("memory".into())
+        .stack_size(4096)
+        .spawn(|| loop {
+            std::thread::sleep(Duration::from_secs(10));
+            memory_report("periodic");
+        })
         .map_err(|err| err.to_string())?;
-    let secs = started.elapsed().as_secs_f64();
-    let digest: String = sink.hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
-    info!("read {bytes} bytes in {secs:.1} s ({:.0} KB/s), sha256 {digest}", bytes as f64 / secs / 1000.0);
-    if digest == EXPECTED_SHA256 {
-        info!("sha256 MATCHES the image written over USB/IP");
-    } else {
-        warn!("sha256 does NOT match {EXPECTED_SHA256}");
-    }
-    heap("end");
-    Ok(())
+
+    // The daemon's operations are deep async state machines, and a transfer blocks the
+    // runtime for its duration; one thread with a large stack serves one client at a time.
+    let daemon = std::thread::Builder::new()
+        .name("dfu-remote".into())
+        .stack_size(64 * 1024)
+        .spawn(move || daemon(host))
+        .map_err(|err| err.to_string())?;
+    daemon.join().map_err(|_| "the daemon thread panicked".to_owned())
 }
 
-#[cfg(feature = "verify-uboot")]
-/// `ops::bootstrap`, with U-Boot read back out of DDR between the cache flush and the
-/// jump. The readback goes through the uncached kseg1 alias and only after `FLUSH_CACHE`:
-/// before it, the image can still sit in the D-cache and DDR would compare stale.
-fn bootstrap_verified(dev: &EspTransport, clock: &BlockingClock) -> Result<(), String> {
-    let err = |err: tdfu_core::Error| err.to_string();
-    let stage1 = bootrom::pad_stage1(STAGE1);
-    let uboot = bootrom::pad_stage1(UBOOT);
-    let mut progress = progress_logger();
-    progress(Progress::Phase(Phase::Stage1));
-    block_on(bootrom::load_to_memory(dev, clock, bootrom::SPL_LOAD_ADDR, &stage1, &mut progress)).map_err(err)?;
-    block_on(bootrom::prog_stage1(dev, clock, bootrom::SPL_ENTRY_ADDR)).map_err(err)?;
-    std::thread::sleep(ops::POST_STAGE1_SETTLE);
-    progress(Progress::Phase(Phase::UBoot));
-    block_on(bootrom::load_to_memory(dev, clock, bootrom::UBOOT_ADDR, &uboot, &mut progress)).map_err(err)?;
-    block_on(bootrom::flush_cache(dev, clock)).map_err(err)?;
-
-    let started = Instant::now();
-    block_on(bootrom::claim(dev)).map_err(err)?;
-    let mut mismatch = None;
-    for (index, expected) in uboot.chunks(READBACK_CHUNK).enumerate() {
-        let offset = index * READBACK_CHUNK;
-        let addr = Kseg1::from_phys(bootrom::UBOOT_ADDR + offset as u32);
-        let got = block_on(bootrom::read_memory(dev, clock, addr, expected.len())).map_err(err)?;
-        if let Some(at) = got.iter().zip(expected).position(|(got, want)| got != want) {
-            let bad = got.iter().zip(expected).filter(|(got, want)| got != want).count();
-            let end = (at + 16).min(expected.len());
-            mismatch = Some(format!(
-                "U-Boot differs in DDR at +{:#x} ({bad} of {} bytes in that chunk): got {:02x?}, want {:02x?}",
-                offset + at,
-                expected.len(),
-                &got[at..end],
-                &expected[at..end]
-            ));
-            break;
-        }
-    }
-    block_on(bootrom::release(dev)).map_err(err)?;
-    if let Some(mismatch) = mismatch {
-        return Err(mismatch);
-    }
-    info!("U-Boot verified in DDR: {} bytes read back in {:?}", uboot.len(), started.elapsed());
-
-    block_on(bootrom::prog_stage2(dev, clock, bootrom::UBOOT_ADDR)).map_err(err)?;
-    info!("U-Boot starting; the device will re-enumerate in DFU mode");
-    Ok(())
-}
-
-/// After a bootstrap with no gadget: does the old device still answer on EP0? An answer
-/// means the bootrom never jumped; silence means the SoC jumped and stopped serving USB
-/// without dropping off the bus.
-fn still_answering(host: &UsbHost, id: u8) {
-    let listed = block_on(host.list()).unwrap_or_default();
-    if !listed.iter().any(|dev| dev.id == id) {
-        info!("address {id} is no longer listed");
-        return;
-    }
-    let Ok(dev) = block_on(host.open(&id)) else {
-        info!("address {id} is listed but cannot be opened");
-        return;
+fn daemon(host: UsbHost) {
+    DAEMON_TASK.store(unsafe { sys::xTaskGetCurrentTaskHandle() }.cast(), Ordering::Relaxed);
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(err) => return error!("tokio runtime: {err}"),
     };
-    let request = ControlIn {
-        control_type: ControlType::Standard,
-        recipient: Recipient::Device,
-        request: 0x06,
-        value: 0x0100,
-        index: 0,
-        len: 18,
-    };
-    match block_on(dev.control_in(request, Duration::from_secs(1))) {
-        Ok(desc) => info!("address {id} still answers GET_DESCRIPTOR ({} bytes): the bootrom never jumped", desc.len()),
-        Err(err) => info!("address {id} does not answer ({err}): the SoC jumped and hung with USB still attached"),
-    }
-}
-
-/// Polls until an Ingenic device in `want` (any stage when `None`) is on the bus.
-fn wait_for(host: &UsbHost, want: Option<Stage>, timeout: Option<Duration>) -> Result<(u8, Stage), String> {
-    let deadline = timeout.map(|timeout| Instant::now() + timeout);
-    loop {
-        for Discovered { id, descriptors } in block_on(host.list()).map_err(|err| err.to_string())? {
-            if !vid::is_ingenic(descriptors.vendor_id) {
-                continue;
-            }
-            let Some(stage) = ops::classify(&descriptors) else {
-                continue;
-            };
-            if want.is_none_or(|want| want == stage) {
-                info!(
-                    "{:04x}:{:04x} {:?} at address {id}: {stage}",
-                    descriptors.vendor_id,
-                    descriptors.product_id,
-                    descriptors.product_string.as_deref().unwrap_or("")
-                );
-                return Ok((id, stage));
-            }
+    runtime.block_on(async move {
+        let addresses = [
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, DEFAULT_PORT)),
+            SocketAddr::from((Ipv4Addr::UNSPECIFIED, DEFAULT_PORT)),
+        ];
+        let listener = match listen::bind(&addresses) {
+            Ok(listener) => listener,
+            Err(err) => return error!("dfu-remote: {err}"),
+        };
+        match listener.local_addr() {
+            Ok(bound) => info!("dfu-remote listening on {bound}"),
+            Err(err) => info!("dfu-remote listening (address unknown: {err})"),
         }
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            return Err(format!("no {want:?} device within {timeout:?}"));
-        }
-        std::thread::sleep(Duration::from_millis(250));
+        let auth = Auth::open();
+        // No disk to stage a READ in: the alt is read twice instead.
+        let mut state = DaemonState::new(host, TokioClock, NO_FIRMWARE_DIR)
+            .with_stream_above(STREAM_ABOVE)
+            .with_read_staging(ReadStaging::TwoPass);
+        serve(listener, &auth, Timeouts::default(), &Origins::SHIPPED, &mut state, NoSignals).await;
+    });
+}
+
+/// Free and lowest-ever free heap, internal and PSRAM, and the daemon stack's high-water mark.
+fn memory_report(when: &str) {
+    let (internal, spiram) = (sys::MALLOC_CAP_INTERNAL, sys::MALLOC_CAP_SPIRAM);
+    let free = |caps| unsafe { sys::heap_caps_get_free_size(caps) };
+    let lowest = |caps| unsafe { sys::heap_caps_get_minimum_free_size(caps) };
+    let dma = unsafe { sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_DMA | sys::MALLOC_CAP_INTERNAL) };
+    let task = DAEMON_TASK.load(Ordering::Relaxed);
+    let stack = if task.is_null() { 0 } else { unsafe { sys::uxTaskGetStackHighWaterMark(task.cast()) } };
+    info!(
+        "memory {when}: internal free {} (lowest {}), DMA block {dma}, psram free {} (lowest {}), daemon stack unused {stack}",
+        free(internal),
+        lowest(internal),
+        free(spiram),
+        lowest(spiram)
+    );
+}
+
+/// There is nothing to interrupt the daemon on the unit; power is the off switch.
+struct NoSignals;
+
+impl Signals for NoSignals {
+    async fn next(&mut self) {
+        core::future::pending::<()>().await;
     }
 }
 
-fn progress_logger() -> impl FnMut(Progress) {
-    let mut decile = 0;
-    move |progress| match progress {
-        Progress::Phase(phase) => {
-            decile = 0;
-            info!("phase {phase:?}");
-        }
-        Progress::Bytes {
-            phase,
-            done,
-            total: Some(total),
-        } if total > 0 && done * 10 / total > decile => {
-            decile = done * 10 / total;
-            info!("{phase:?} {}%  {done}/{total}", decile * 10);
-        }
-        Progress::Note(note) => info!("{note}"),
-        _ => {}
+/// Joins the network saved in NVS: the namespace and keys usbipdcpp_esp32 uses, so a board
+/// provisioned by that firmware keeps its credentials.
+fn connect_wifi(
+    modem: Modem<'static>,
+    sysloop: EspSystemEventLoop,
+    nvs: EspDefaultNvsPartition,
+) -> Result<BlockingWifi<EspWifi<'static>>, String> {
+    let (ssid, password) = saved_credentials(&nvs)?;
+    let driver = EspWifi::new(modem, sysloop.clone(), Some(nvs)).map_err(|err| err.to_string())?;
+    let mut wifi = BlockingWifi::wrap(driver, sysloop).map_err(|err| err.to_string())?;
+    wifi.set_configuration(&Configuration::Client(ClientConfiguration {
+        ssid: ssid.as_str().try_into().map_err(|_| "saved SSID is too long".to_owned())?,
+        password: password.as_str().try_into().map_err(|_| "saved password is too long".to_owned())?,
+        auth_method: if password.is_empty() { AuthMethod::None } else { AuthMethod::WPA2Personal },
+        ..Default::default()
+    }))
+    .map_err(|err| err.to_string())?;
+    wifi.start().map_err(|err| err.to_string())?;
+    wifi.connect().map_err(|err| format!("joining {ssid}: {err}"))?;
+    wifi.wait_netif_up().map_err(|err| err.to_string())?;
+    // Every DFU block is a request/response pair; modem sleep adds 100 ms stalls to each.
+    unsafe { sys::esp_wifi_set_ps(sys::wifi_ps_type_t_WIFI_PS_NONE) };
+    let netif = wifi.wifi().sta_netif();
+    unsafe { sys::esp_netif_create_ip6_linklocal(netif.handle()) };
+    match netif.get_ip_info() {
+        Ok(ip) => info!("wifi: joined {ssid}, {}", ip.ip),
+        Err(err) => info!("wifi: joined {ssid} (no IPv4 info: {err})"),
     }
+    Ok(wifi)
 }
 
-#[derive(Default)]
-struct HashSink {
-    hasher: Sha256,
-}
-
-impl Write for HashSink {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.hasher.update(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-fn heap(when: &str) {
-    let free = unsafe { sys::esp_get_free_heap_size() };
-    let dma = unsafe { sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_DMA) };
-    info!("heap {when}: {free} bytes free, largest DMA block {dma}");
-}
-
-/// Every await here completes synchronously (the backend blocks), so one poll finishes the
-/// future; the loop only covers an unexpected `Pending`.
-fn block_on<F: Future>(future: F) -> F::Output {
-    let mut future = pin!(future);
-    let mut cx = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-            return output;
-        }
-        std::thread::yield_now();
-    }
+fn saved_credentials(nvs: &EspDefaultNvsPartition) -> Result<(String, String), String> {
+    let store = EspNvs::new(nvs.clone(), "wifi", false).map_err(|err| format!("no saved Wi-Fi: {err}"))?;
+    let mut buf = [0u8; 100];
+    let ssid = store
+        .get_str("ssid", &mut buf)
+        .map_err(|err| err.to_string())?
+        .ok_or("no saved SSID")?
+        .to_owned();
+    let password = store.get_str("passwd", &mut buf).map_err(|err| err.to_string())?.unwrap_or("").to_owned();
+    Ok((ssid, password))
 }

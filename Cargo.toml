@@ -10,6 +10,13 @@ name = "backpack"
 path = "src/main.rs"
 harness = false
 
+# Detect, bootstrap and read a camera with no network; `--features verify-uboot` adds the
+# DDR readback of U-Boot before the jump.
+[[bin]]
+name = "standalone"
+path = "src/bin/standalone.rs"
+harness = false
+
 [profile.release]
 opt-level = "s"
 debug = true
@@ -28,6 +35,8 @@ esp-idf-svc = "0.53"
 sha2 = "0.10"
 tdfu-core = { path = "../thingino-dfu-rs-espidf/crates/tdfu-core" }
 tdfu-usb = { path = "../thingino-dfu-rs-espidf/crates/tdfu-usb" }
+tdfu-daemon = { path = "../thingino-dfu-rs-espidf/crates/tdfu-daemon" }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "io-util", "macros"] }
 
 [build-dependencies]
 embuild = "0.33"
