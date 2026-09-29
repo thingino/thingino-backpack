@@ -1,6 +1,8 @@
 #!/bin/sh
-# Builds the three flash images: bootloader (0x0), partition table (0x8000), app (0x10000).
-# Flashing them separately keeps whatever NVS the board already holds.
+# Builds the flash images: bootloader (0x0), partition table (0x8000) and app (0x10000),
+# and full.bin, all three in one image to write at 0x0. full.bin is for a first install:
+# it also erases the saved Wi-Fi settings. The three separately, or app.bin alone,
+# keep them.
 #
 # `./image.sh` builds for the ESP32-S3 without PSRAM. A variant builds in a target directory
 # of its own, so switching does not rebuild ESP-IDF each time:
@@ -31,5 +33,12 @@ out=${CARGO_TARGET_DIR:-target}/$target/release
 mkdir -p "$images"
 cp "$(ls -t "$out"/build/esp-idf-sys-*/out/build/bootloader/bootloader.bin | head -1)" "$images"/bootloader.bin
 python3 "$IDF_PATH/components/partition_table/gen_esp32part.py" partitions.csv "$images"/partition-table.bin >/dev/null
-espflash save-image --chip "$chip" --flash-size 4mb "$out/backpack" "$images"/app.bin
+# espflash rewrites each image header's flash settings, so it is given the ones ESP-IDF
+# was built with; its defaults (40 MHz among them) would differ.
+sdkconfig=$(ls -t "$out"/build/esp-idf-sys-*/out/sdkconfig | head -1)
+setting() { sed -n "s/^CONFIG_ESPTOOLPY_$1=\"\(.*\)\"$/\1/p" "$sdkconfig"; }
+flash="--flash-mode $(setting FLASHMODE) --flash-freq $(setting FLASHFREQ)hz --flash-size $(setting FLASHSIZE | tr A-Z a-z)"
+espflash save-image --chip "$chip" $flash "$out/backpack" "$images"/app.bin
+espflash save-image --chip "$chip" $flash --merge --skip-padding \
+	--bootloader "$images"/bootloader.bin --partition-table partitions.csv "$out/backpack" "$images"/full.bin
 ls -l "$images"
