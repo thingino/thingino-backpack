@@ -22,6 +22,7 @@ use tdfu_daemon::{listen, TokioClock, DEFAULT_PORT};
 
 use tdfu_usb::espidf::UsbHost;
 
+mod console;
 mod portal;
 mod status;
 mod wifi;
@@ -63,6 +64,7 @@ fn run() -> Result<(), String> {
     let _wifi = wifi::join(peripherals.modem, sysloop, nvs, saved)?;
     // Findable as a camera is: the app's hub lists it and opens the page on port 80.
     let _status = status::start(&hostname)?;
+    console::start(peripherals.uart1, peripherals.pins.gpio17, peripherals.pins.gpio18)?;
     let host = UsbHost::install().map_err(|err| err.to_string())?;
     memory_report("after Wi-Fi and USB host");
     std::thread::Builder::new()
@@ -112,20 +114,25 @@ fn daemon(host: UsbHost) {
     });
 }
 
-/// Free and lowest-ever free heap, internal and PSRAM, and the daemon stack's high-water mark.
+/// Free and lowest-ever free heap, internal and PSRAM, and the stack high-water marks of the
+/// daemon and console threads.
 fn memory_report(when: &str) {
     let (internal, spiram) = (sys::MALLOC_CAP_INTERNAL, sys::MALLOC_CAP_SPIRAM);
     let free = |caps| unsafe { sys::heap_caps_get_free_size(caps) };
     let lowest = |caps| unsafe { sys::heap_caps_get_minimum_free_size(caps) };
     let dma = unsafe { sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_DMA | sys::MALLOC_CAP_INTERNAL) };
-    let task = DAEMON_TASK.load(Ordering::Relaxed);
-    let stack = if task.is_null() { 0 } else { unsafe { sys::uxTaskGetStackHighWaterMark(task.cast()) } };
+    let unused = |task: &AtomicPtr<core::ffi::c_void>| {
+        let task = task.load(Ordering::Relaxed);
+        if task.is_null() { 0 } else { unsafe { sys::uxTaskGetStackHighWaterMark(task.cast()) } }
+    };
     info!(
-        "memory {when}: internal free {} (lowest {}), DMA block {dma}, psram free {} (lowest {}), daemon stack unused {stack}",
+        "memory {when}: internal free {} (lowest {}), DMA block {dma}, psram free {} (lowest {}), stack unused: daemon {}, console {}",
         free(internal),
         lowest(internal),
         free(spiram),
-        lowest(spiram)
+        lowest(spiram),
+        unused(&DAEMON_TASK),
+        unused(&console::TASK)
     );
 }
 

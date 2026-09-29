@@ -112,10 +112,13 @@ code {{ padding: 0 .2rem; }}
 <p>In the web flasher, choose remote mode and enter <code>{first}</code>.</p>
 <p>Or by address:</p>
 <ul>{list}</ul>
+<p>The camera's serial console is on port {console}, raw, one client at a time (a new one takes over). Ctrl-] leaves:</p>
+<pre>socat -,rawer,escape=0x1d tcp:{name}.local:{console}</pre>
 </body>
 </html>
 "#,
         version = escape(&build_id()),
+        console = crate::console::PORT,
     )
 }
 
