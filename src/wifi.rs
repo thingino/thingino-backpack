@@ -13,10 +13,10 @@ use std::thread;
 use esp_idf_svc::eventloop::{EspSubscription, EspSystemEventLoop, System};
 use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::handle::RawHandle;
-use esp_idf_svc::netif::IpEvent;
+use esp_idf_svc::netif::{EspNetif, IpEvent, NetifConfiguration, NetifStack};
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 use esp_idf_svc::sys::{self, EspError};
-use esp_idf_svc::wifi::{AuthMethod, ClientConfiguration, Configuration, EspWifi, WifiEvent};
+use esp_idf_svc::wifi::{AuthMethod, ClientConfiguration, Configuration, EspWifi, WifiDriver, WifiEvent};
 use log::{info, warn};
 
 const FIRST_RETRY: Duration = Duration::from_secs(1);
@@ -42,7 +42,10 @@ enum Change {
 /// is up; the join completes in the background.
 pub fn join(modem: Modem<'static>, sysloop: EspSystemEventLoop, nvs: EspDefaultNvsPartition) -> Result<Station, String> {
     let (ssid, password) = saved_credentials(&nvs)?;
-    let mut wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs)).map_err(|err| err.to_string())?;
+    let driver = WifiDriver::new(modem, sysloop.clone(), Some(nvs)).map_err(|err| err.to_string())?;
+    let sta = EspNetif::new_with_conf(&sta_configuration()).map_err(|err| err.to_string())?;
+    let ap = EspNetif::new(NetifStack::Ap).map_err(|err| err.to_string())?;
+    let mut wifi = EspWifi::wrap_all(driver, sta, ap).map_err(|err| err.to_string())?;
     wifi.set_configuration(&Configuration::Client(ClientConfiguration {
         ssid: ssid.as_str().try_into().map_err(|_| "saved SSID is too long".to_owned())?,
         password: password.as_str().try_into().map_err(|_| "saved password is too long".to_owned())?,
@@ -88,6 +91,20 @@ pub fn join(modem: Modem<'static>, sysloop: EspSystemEventLoop, nvs: EspDefaultN
         _wifi: wifi,
         _events: [link, addresses],
     })
+}
+
+/// esp-idf-svc's client defaults leave out two flags ESP-IDF's own default station netif
+/// sets: without IPV6_AUTOCONFIG lwIP ignores every prefix a router advertises and the
+/// unit keeps only its link-local address, and without MLDV6_REPORT a snooping switch may
+/// stop forwarding the solicitations that reach its addresses.
+fn sta_configuration() -> NetifConfiguration {
+    let default = NetifConfiguration::wifi_default_client();
+    NetifConfiguration {
+        flags: default.flags
+            | sys::esp_netif_flags_ESP_NETIF_FLAG_IPV6_AUTOCONFIG_ENABLED
+            | sys::esp_netif_flags_ESP_NETIF_FLAG_MLDV6_REPORT,
+        ..default
+    }
 }
 
 fn stay_joined(ssid: &str, netif: usize, changes: Receiver<Change>) {
