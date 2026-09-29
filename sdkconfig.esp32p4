@@ -1,0 +1,15 @@
+# ESP32-P4 (`./image.sh p4`): no radio, so the unit is on Ethernet, the EMAC with an IP101
+# PHY on the pins of Espressif's P4 Function EV board (src/eth.rs). Every P4 module has
+# PSRAM.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_ETH_USE_ESP32_EMAC=y
+
+# mDNS announces on Ethernet rather than the Wi-Fi station.
+CONFIG_MDNS_PREDEF_NETIF_STA=n
+CONFIG_MDNS_PREDEF_NETIF_ETH=y
+
+# ESP-IDF 5.5 builds for P4 silicon 3.1 and later. A 3.0 chip needs CONFIG_ESP32P4_REV_MIN_300=y,
+# and an earlier P4 (revisions 0.x and 1.x) needs the line below; one image cannot serve both
+# generations.
+# CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y

@@ -1,7 +1,18 @@
 [build]
 target = "xtensa-esp32s3-espidf"
 
+# `image.sh s2` and `image.sh p4` build for the other chips, passing `--target` and MCU.
 [target.xtensa-esp32s3-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
+
+[target.xtensa-esp32s2-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
+
+[target.riscv32imafc-esp-espidf]
 linker = "ldproxy"
 runner = "espflash flash --monitor"
 rustflags = ["--cfg", "espidf_time64"]

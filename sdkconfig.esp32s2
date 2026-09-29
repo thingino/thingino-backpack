@@ -1,0 +1,7 @@
+# ESP32-S2 (`./image.sh s2`): one core and 320 KB of SRAM, which does not hold a bootstrap
+# next to Wi-Fi, so this build is for modules with PSRAM (quad on the S2, like the 2 MB of an
+# S2FN4R2). Allocations of 4 KB and up land in PSRAM, the stream buffers among them; USB
+# transfer buffers ask for DMA memory and stay internal, where the OTG controller reaches.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096

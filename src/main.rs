@@ -1,8 +1,9 @@
-//! thingino-backpack: the thingino-dfu daemon (`dfu-remote`) on an ESP32-S3.
+//! thingino-backpack: the thingino-dfu daemon (`dfu-remote`) on an ESP32-S3, -S2 or -P4.
 //!
-//! The same tdfu-daemon library a Linux host runs, served over Wi-Fi, with the camera on
-//! the OTG port driven by the ESP-IDF USB host backend. `thingino-dfu --host <backpack>`
-//! and the browser flasher's remote mode talk to it unchanged.
+//! The same tdfu-daemon library a Linux host runs, served over Wi-Fi (Ethernet on the P4,
+//! which has no radio), with the camera on the OTG port driven by the ESP-IDF USB host
+//! backend. `thingino-dfu --host <backpack>` and the browser flasher's remote mode talk to it
+//! unchanged.
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 use core::time::Duration;
@@ -12,6 +13,7 @@ use std::sync::Arc;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::io::vfs::MountedEventfs;
+#[cfg(not(esp32p4))]
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys;
 use log::{error, info};
@@ -25,10 +27,20 @@ use tdfu_usb::espidf::UsbHost;
 
 mod camera;
 mod console;
+#[cfg(esp32p4)]
+mod eth;
+#[cfg(not(esp32p4))]
 mod portal;
 mod rfc2217;
 mod status;
+#[cfg(not(esp32p4))]
 mod wifi;
+
+/// The interface clients reach the unit on, whose addresses the status page lists.
+#[cfg(not(esp32p4))]
+const NETIF_KEY: &core::ffi::CStr = wifi::NETIF_KEY;
+#[cfg(esp32p4)]
+const NETIF_KEY: &core::ffi::CStr = eth::NETIF_KEY;
 
 /// Where the daemon would look for loaders. Deliberately empty: the client streams the
 /// loader pair with BOOTSTRAP, so nothing is stored on the unit.
@@ -64,19 +76,35 @@ fn run() -> Result<(), String> {
     let eventfs = MountedEventfs::mount(4).map_err(|err| format!("eventfd: {err}"))?;
     let peripherals = Peripherals::take().map_err(|err| err.to_string())?;
     let sysloop = EspSystemEventLoop::take().map_err(|err| err.to_string())?;
-    let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
-    let Some(saved) = wifi::saved(&nvs)? else {
-        // Nothing to join: the portal is all this boot does, until it is given a network.
-        return portal::run(peripherals.modem, sysloop, nvs).map(|never| match never {});
+    #[cfg(not(esp32p4))]
+    let (network, hostname) = {
+        let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
+        let Some(saved) = wifi::saved(&nvs)? else {
+            // Nothing to join: the portal is all this boot does, until it is given a network.
+            return portal::run(peripherals.modem, sysloop, nvs).map(|never| match never {});
+        };
+        let hostname = saved.hostname.clone();
+        (wifi::join(peripherals.modem, sysloop, nvs, saved)?, hostname)
     };
-    let hostname = saved.hostname.clone();
-    let wifi = wifi::join(peripherals.modem, sysloop, nvs, saved)?;
+    #[cfg(esp32p4)]
+    let (network, hostname) = {
+        let hostname = eth::default_hostname();
+        (eth::start(sysloop, &hostname)?, hostname)
+    };
+    // Power, boot pin, UART TX and RX. The P4's are placeholders until a board is chosen:
+    // clear of its Ethernet, console and strapping pins, and nothing more is known.
+    #[cfg(not(esp32p4))]
+    let (power, boot, tx, rx) =
+        (peripherals.pins.gpio15, peripherals.pins.gpio16, peripherals.pins.gpio17, peripherals.pins.gpio18);
+    #[cfg(esp32p4)]
+    let (power, boot, tx, rx) =
+        (peripherals.pins.gpio20, peripherals.pins.gpio21, peripherals.pins.gpio22, peripherals.pins.gpio23);
     let host = UsbHost::install().map_err(|err| err.to_string())?;
-    let camera = camera::start(peripherals.pins.gpio15, peripherals.pins.gpio16, host.clone())?;
-    console::start(peripherals.uart1, peripherals.pins.gpio17, peripherals.pins.gpio18, Arc::clone(&camera))?;
+    let camera = camera::start(power, boot, host.clone())?;
+    console::start(peripherals.uart1, tx, rx, Arc::clone(&camera))?;
     // Findable as a camera is: the app's hub lists it and opens the page on port 80.
     let status = status::start(&hostname, camera)?;
-    memory_report("after Wi-Fi and USB host");
+    memory_report("after the network and USB host");
 
     // The daemon's operations are deep async state machines, and a transfer blocks the
     // runtime for its duration; one thread serves one client at a time.
@@ -86,7 +114,7 @@ fn run() -> Result<(), String> {
         .spawn(move || daemon(host))
         .map_err(|err| err.to_string())?;
     // These run for the life of the firmware, which the main task does not.
-    core::mem::forget((eventfs, wifi, status));
+    core::mem::forget((eventfs, network, status));
     Ok(())
 }
 

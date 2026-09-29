@@ -1,7 +1,8 @@
 # thingino backpack
 
-Firmware for an ESP32-S3 strapped to one thingino camera, which makes that camera
-flashable and debuggable over the network with nothing else attached:
+Firmware for an ESP32-S3 (or, untested so far, an ESP32-S2 or ESP32-P4) strapped to one
+thingino camera, which makes that camera flashable and debuggable over the network with
+nothing else attached:
 
 - **Flashing.** The thingino-dfu daemon (`dfu-remote`) runs on the unit, with the camera's
   USB port on the ESP32-S3's USB host. `thingino-dfu --host` and the web flasher's remote
@@ -16,15 +17,36 @@ flashable and debuggable over the network with nothing else attached:
 Nothing is stored on the unit: the client sends the loader pair with each bootstrap, and
 images stream through it, so the default build runs without PSRAM.
 
+## Chips
+
+| Chip     | Build                                   | Network  | Camera USB | Status           |
+|----------|-----------------------------------------|----------|------------|------------------|
+| ESP32-S3 | `./image.sh`, or `./image.sh psram`     | Wi-Fi    | full speed | in use           |
+| ESP32-S2 | `./image.sh s2`                         | Wi-Fi    | full speed | builds, untested |
+| ESP32-P4 | `./image.sh p4`                         | Ethernet | high speed | builds, untested |
+
+- **ESP32-S3:** the default build needs no PSRAM; `psram` is for modules with octal PSRAM
+  (N8R8, N16R8).
+- **ESP32-S2:** one core and 320 KB of SRAM, which does not hold a bootstrap next to Wi-Fi,
+  so the build is for modules with PSRAM (quad, like the 2 MB of an S2FN4R2). On boards
+  whose only USB port is the native one, that port is the camera's.
+- **ESP32-P4:** no radio, so the unit is on Ethernet: the chip's EMAC with an IP101 PHY on
+  ESP-IDF's P4 default pins, which are those of Espressif's P4 Function EV board
+  (`src/eth.rs`). Addresses come by DHCPv4 and SLAAC, there is no setup portal, and the
+  hostname is `thingino-backpack-xxxx` from the Ethernet MAC. The camera's USB goes to the
+  high-speed port. The camera's power, boot pin and UART pins (GPIO20 to 23 in
+  `src/main.rs`) are placeholders until a board is chosen. ESP-IDF 5.5 builds for P4 silicon
+  3.1 and later; `sdkconfig.esp32p4` says what earlier chips need.
+
 ## Wiring
 
-| ESP32-S3        | Camera                                                                    |
+| ESP32-S3, -S2   | Camera                                                                    |
 |-----------------|---------------------------------------------------------------------------|
 | GPIO15          | Power switch (a MOSFET module or similar): high = camera on               |
 | GPIO16          | Flash DI, pin 5 of an SOIC-8 NOR flash (open-drain: low = boot from USB)  |
 | GPIO17 (TX)     | UART RX                                                                   |
 | GPIO18 (RX)     | UART TX                                                                   |
-| GPIO19, GPIO20  | USB D-, D+ (the ESP32-S3's OTG port)                                      |
+| GPIO19, GPIO20  | USB D-, D+ (the OTG port)                                                 |
 | GND             | GND                                                                       |
 
 - The UART is 3.3 V on both sides. GPIO17 only drives the camera's RX while the camera has
@@ -38,28 +60,31 @@ images stream through it, so the default build runs without PSRAM.
   bypassed.
 - The ESP32's own log is on UART0 (GPIO43 TX, GPIO44 RX), 115200 8N1, which is the port
   most boards bring out through their USB-UART bridge. The OTG port belongs to the camera.
-- The pins are set in `src/main.rs`; the status page lists the ones in use.
+- The pins are set in `src/main.rs`, per chip; the status page lists the ones in use.
 
 ## Building
 
 Requirements:
 
-- The Xtensa Rust toolchain from [espup](https://github.com/esp-rs/espup) (`channel =
-  "esp"`), plus `ldproxy` and `espflash` (`cargo install ldproxy espflash`).
+- The Rust toolchain from [espup](https://github.com/esp-rs/espup) (`channel = "esp"`),
+  which has the Xtensa targets of the S2 and S3 and the P4's `riscv32imafc-esp-espidf`,
+  plus `ldproxy` and `espflash` (`cargo install ldproxy espflash`).
 - ESP-IDF v5.5.5, at `~/esp/esp-idf-v5.5.5` by default (`env.sh` sets `IDF_PATH`).
 - [thingino-dfu-rs](https://github.com/thingino/thingino-dfu-rs) checked out next to this
   repository as `thingino-dfu-rs-espidf`, on its `espidf-backend` branch, which holds the
   ESP-IDF USB host backend until it is merged.
 
 ```sh
-./image.sh          # images/: bootloader.bin, partition-table.bin, app.bin
-./image.sh psram    # images/psram/: for modules with octal PSRAM (N8R8, N16R8)
+./image.sh          # ESP32-S3, images/: bootloader.bin, partition-table.bin, app.bin
+./image.sh psram    # ESP32-S3 with octal PSRAM, images/psram/
+./image.sh s2       # ESP32-S2, images/s2/
+./image.sh p4       # ESP32-P4, images/p4/
 ```
 
-The first build compiles ESP-IDF and takes a while; each variant builds in a target
+The first build of each compiles ESP-IDF and takes a while; each builds in a target
 directory of its own.
 
-Flash all three images once:
+Flash all three images once, with the chip and the directory that match:
 
 ```sh
 esptool.py --chip esp32s3 write_flash \
@@ -71,8 +96,9 @@ Wi-Fi settings. The image is built for 4 MB of flash and boots on 4, 8 and 16 MB
 
 ## First boot
 
-With no saved network the unit opens an access point named `THINGINO-BACKPACK-xxxx` (the
-last four hex digits of its MAC) at 172.16.0.1, and answers the thingino cameras' setup
+On the P4 there is nothing to set up: it takes its addresses on Ethernet. The S2 and S3,
+with no saved network, open an access point named `THINGINO-BACKPACK-xxxx` (the
+last four hex digits of its MAC) at 172.16.0.1, and answer the thingino cameras' setup
 API. Either:
 
 - use the thingino app, which finds it by the `THINGINO-` prefix and derives the Wi-Fi key

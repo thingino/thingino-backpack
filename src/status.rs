@@ -89,10 +89,10 @@ pub fn build_id() -> String {
     unsafe { CStr::from_ptr(desc.version.as_ptr()) }.to_string_lossy().into_owned()
 }
 
-/// The station's addresses as clients write them with the daemon's port: IPv6 first, as
-/// the network prefers it, bracketed.
+/// The unit's addresses as clients write them with the daemon's port: IPv6 first, as the
+/// network prefers it, bracketed.
 fn endpoints() -> Vec<String> {
-    let netif = unsafe { sys::esp_netif_get_handle_from_ifkey(c"WIFI_STA_DEF".as_ptr()) };
+    let netif = unsafe { sys::esp_netif_get_handle_from_ifkey(crate::NETIF_KEY.as_ptr()) };
     if netif.is_null() {
         return Vec::new();
     }
@@ -148,7 +148,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 </head>
 <body>
 <h1>{name}</h1>
-<p class="dim">thingino backpack {version}</p>
+<p class="dim">thingino backpack {version} on {chip}</p>
 <p>The camera on this backpack is flashed through its dfu-remote daemon. From a computer:</p>
 <pre>thingino-dfu --host {first} -l</pre>
 <p>In the web flasher, choose remote mode and enter <code>{first}</code>.</p>
@@ -167,7 +167,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 <tr><td>GPIO{boot}</td><td>camera flash DI, pin 5 of an SOIC-8 NOR; open-drain, pulled low to boot from USB</td></tr>
 <tr><td>GPIO{tx}</td><td>camera UART RX (the backpack's TX)</td></tr>
 <tr><td>GPIO{rx}</td><td>camera UART TX (the backpack's RX)</td></tr>
-<tr><td>GPIO19, GPIO20</td><td>camera USB D-, D+ (the ESP32-S3's OTG port)</td></tr>
+<tr><td>{usb}</td><td>camera USB ({usb_port})</td></tr>
 <tr><td>GND</td><td>camera ground</td></tr>
 </table>
 {script}
@@ -175,6 +175,9 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 </html>
 "#,
         version = escape(&build_id()),
+        chip = chip(),
+        usb = USB_PINS.0,
+        usb_port = USB_PINS.1,
         console = console::PORT,
         rfc2217 = console::RFC2217_PORT,
         script = CAMERA_SCRIPT,
@@ -183,6 +186,19 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
         tx = console::pins().0,
         rx = console::pins().1,
     )
+}
+
+/// Where the camera's USB lands: GPIO pins on the full-speed chips, a port of its own on the
+/// P4's high-speed controller.
+#[cfg(not(esp32p4))]
+const USB_PINS: (&str, &str) = ("GPIO19, GPIO20", "D-, D+ of the OTG port");
+#[cfg(esp32p4)]
+const USB_PINS: (&str, &str) = ("USB 2.0 HS", "the high-speed OTG port");
+
+/// The chip ESP-IDF was built for, `esp32s3` and the like.
+fn chip() -> String {
+    CStr::from_bytes_until_nul(sys::CONFIG_IDF_TARGET)
+        .map_or_else(|_| "an ESP32".into(), |chip| chip.to_string_lossy().into_owned())
 }
 
 /// The camera section's buttons and its state, refreshed every few seconds.

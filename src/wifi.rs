@@ -20,6 +20,8 @@ use esp_idf_svc::sys::{self, EspError};
 use esp_idf_svc::wifi::{AuthMethod, ClientConfiguration, Configuration, EspWifi, WifiDriver, WifiEvent};
 use log::{info, warn};
 
+pub const NETIF_KEY: &core::ffi::CStr = c"WIFI_STA_DEF";
+
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const LONGEST_RETRY: Duration = Duration::from_secs(30);
 

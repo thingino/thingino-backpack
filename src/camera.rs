@@ -195,16 +195,19 @@ pub fn start(power: impl OutputPin + 'static, boot: impl OutputPin + 'static, ho
     Ok(camera)
 }
 
+#[expect(
+    clippy::field_reassign_with_default,
+    reason = "the P4's configuration has a field the S2's and S3's lack, so no one struct literal fits all three"
+)]
 fn configure(pin: i32, mode: sys::gpio_mode_t, level: u32) -> Result<(), sys::EspError> {
     // SAFETY: the pin number comes from a peripheral this module took ownership of.
     esp!(unsafe { sys::gpio_set_level(pin, level) })?;
-    let config = sys::gpio_config_t {
-        pin_bit_mask: 1_u64 << pin,
-        mode,
-        pull_up_en: sys::gpio_pullup_t_GPIO_PULLUP_DISABLE,
-        pull_down_en: sys::gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
-        intr_type: sys::gpio_int_type_t_GPIO_INTR_DISABLE,
-    };
+    let mut config = sys::gpio_config_t::default();
+    config.pin_bit_mask = 1_u64 << pin;
+    config.mode = mode;
+    config.pull_up_en = sys::gpio_pullup_t_GPIO_PULLUP_DISABLE;
+    config.pull_down_en = sys::gpio_pulldown_t_GPIO_PULLDOWN_DISABLE;
+    config.intr_type = sys::gpio_int_type_t_GPIO_INTR_DISABLE;
     // SAFETY: `config` outlives the call.
     esp!(unsafe { sys::gpio_config(&config) })
 }
