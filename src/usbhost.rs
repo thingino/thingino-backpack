@@ -63,6 +63,11 @@ struct HostState {
     /// The library refuses a second open from the same client, so `list` answers for the
     /// devices open right now from here.
     open: HashMap<u8, DeviceDescriptors>,
+    /// Handles kept open between operations, by address, still holding their IDF claim.
+    /// Reopening means a new claim, and a new claim means fresh pipes at DATA0 while the
+    /// device's endpoints keep counting, so a handle stays until its device leaves: Linux
+    /// likewise keeps endpoint state per device rather than per open.
+    parked: HashMap<u8, Parked>,
 }
 
 impl Shared {
@@ -91,10 +96,11 @@ impl Shared {
         state.open.remove(&address);
     }
 
-    /// Closes deferred devices whose abandoned transfers have all completed.
+    /// Closes deferred devices whose abandoned transfers have all completed, and parked
+    /// ones whose device has left.
     fn reap(&self) {
         let mut state = self.state.lock().unwrap();
-        let HostState { gone, deferred, open } = &mut *state;
+        let HostState { gone, deferred, open, parked } = &mut *state;
         deferred.retain(|entry| {
             if entry.ep0_inflight.load(Ordering::SeqCst) > 0 {
                 return true;
@@ -104,6 +110,19 @@ impl Shared {
             open.remove(&entry.address);
             false
         });
+        parked.retain(|&address, entry| {
+            if !gone.contains(&entry.handle) {
+                return true;
+            }
+            let dev = entry.handle as DevHandle;
+            if let Some(interface) = entry.idf_claimed {
+                release_interface(self.client(), dev, interface, &entry.descriptors.config_descriptor);
+            }
+            unsafe { sys::usb_host_device_close(self.client(), dev) };
+            gone.retain(|&handle| handle != entry.handle);
+            open.remove(&address);
+            false
+        });
     }
 }
 
@@ -111,6 +130,36 @@ struct Deferred {
     handle: usize,
     address: u8,
     ep0_inflight: Arc<AtomicUsize>,
+}
+
+/// An open handle between operations: see `HostState::parked`.
+struct Parked {
+    handle: usize,
+    idf_claimed: Option<u8>,
+    ep0_inflight: Arc<AtomicUsize>,
+    descriptors: DeviceDescriptors,
+    mps0: usize,
+    configuration: u8,
+}
+
+/// Releases an IDF interface claim, cancelling first whatever abandoned transfers are
+/// still queued on its endpoints, which make the release fail.
+fn release_interface(client: sys::usb_host_client_handle_t, dev: DevHandle, interface: u8, config: &[u8]) {
+    if unsafe { sys::usb_host_interface_release(client, dev, interface) } == ERR_INVALID_STATE {
+        for address in interface_endpoints(config, interface) {
+            cancel_endpoint(dev, address);
+        }
+        unsafe { sys::usb_host_interface_release(client, dev, interface) };
+    }
+}
+
+/// Host side only: halting and flushing completes whatever is queued as cancelled.
+fn cancel_endpoint(dev: DevHandle, address: u8) {
+    unsafe {
+        sys::usb_host_endpoint_halt(dev, address);
+        sys::usb_host_endpoint_flush(dev, address);
+        sys::usb_host_endpoint_clear(dev, address);
+    }
 }
 
 unsafe extern "C" fn client_event(msg: *const sys::usb_host_client_event_msg_t, arg: *mut c_void) {
@@ -475,6 +524,21 @@ impl LocalUsbBackend for UsbHost {
     }
 
     async fn open(&self, id: &u8) -> Result<EspTransport, UsbError> {
+        self.shared.reap();
+        let parked = self.shared.state.lock().unwrap().parked.remove(id);
+        if let Some(parked) = parked {
+            return Ok(EspTransport {
+                shared: self.shared.clone(),
+                dev: Cell::new(Raw(parked.handle as DevHandle)),
+                address: Cell::new(*id),
+                descriptors: parked.descriptors,
+                mps0: parked.mps0,
+                configuration: parked.configuration,
+                claim: RefCell::new(None),
+                idf_claimed: Cell::new(parked.idf_claimed),
+                ep0_inflight: RefCell::new(parked.ep0_inflight),
+            });
+        }
         let client = self.shared.client();
         let mut dev = ptr::null_mut();
         check(unsafe { sys::usb_host_device_open(client, *id, &mut dev) }, Pipe::Device, "usb_host_device_open")?;
@@ -591,18 +655,8 @@ impl EspTransport {
         }
     }
 
-    /// Host side only: halting and flushing completes whatever is queued as cancelled.
     fn cancel(&self, endpoint: BulkEndpoint) {
-        self.cancel_address(endpoint.address());
-    }
-
-    fn cancel_address(&self, address: u8) {
-        let dev = self.dev();
-        unsafe {
-            sys::usb_host_endpoint_halt(dev, address);
-            sys::usb_host_endpoint_flush(dev, address);
-            sys::usb_host_endpoint_clear(dev, address);
-        }
+        cancel_endpoint(self.dev(), endpoint.address());
     }
 
     fn claim_idf(&self, interface: u8) -> Result<(), UsbError> {
@@ -616,16 +670,8 @@ impl EspTransport {
     }
 
     fn release_idf(&self) {
-        let Some(interface) = self.idf_claimed.take() else {
-            return;
-        };
-        let client = self.shared.client();
-        if unsafe { sys::usb_host_interface_release(client, self.dev(), interface) } == ERR_INVALID_STATE {
-            // Abandoned transfers still queued on the interface's endpoints.
-            for address in interface_endpoints(&self.descriptors.config_descriptor, interface) {
-                self.cancel_address(address);
-            }
-            unsafe { sys::usb_host_interface_release(client, self.dev(), interface) };
+        if let Some(interface) = self.idf_claimed.take() {
+            release_interface(self.shared.client(), self.dev(), interface, &self.descriptors.config_descriptor);
         }
     }
 
@@ -645,8 +691,23 @@ impl EspTransport {
 
     fn close(&self) {
         let dev = self.dev();
-        self.release_claim();
         let ep0_inflight = self.ep0_inflight.borrow().clone();
+        self.claim.borrow_mut().take();
+        if ep0_inflight.load(Ordering::SeqCst) == 0 && !self.is_gone() {
+            self.shared.state.lock().unwrap().parked.insert(
+                self.address.get(),
+                Parked {
+                    handle: dev as usize,
+                    idf_claimed: self.idf_claimed.take(),
+                    ep0_inflight,
+                    descriptors: self.descriptors.clone(),
+                    mps0: self.mps0,
+                    configuration: self.configuration,
+                },
+            );
+            return;
+        }
+        self.release_idf();
         if ep0_inflight.load(Ordering::SeqCst) > 0 {
             warn!("address {}: a control transfer is still in flight; closing once it completes", self.address.get());
             self.shared.state.lock().unwrap().deferred.push(Deferred {
@@ -816,7 +877,8 @@ impl LocalUsbTransport for EspTransport {
         // halt resets them. thingino-dfu claims and releases around every operation, which
         // on Linux leaves the toggles alone. Mapped literally onto IDF, the bootrom drops the
         // first packet after every re-claim as a retransmission. So the IDF claim is taken
-        // once and kept, and `release_interface` only ends the logical claim.
+        // once and kept, `release_interface` only ends the logical claim, and closing parks
+        // the handle with its claim until the device leaves.
         if self.idf_claimed.get() != Some(spec.interface) {
             self.release_idf();
             self.claim_idf(spec.interface)?;
