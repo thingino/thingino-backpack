@@ -31,6 +31,15 @@ const SETUP_LEN: usize = 8;
 /// multiple of every bulk max packet size so that splitting never inserts a short packet.
 const CHUNK: usize = 16 * 1024;
 const DEVICE_GONE_TIMEOUT: Duration = Duration::from_secs(2);
+/// The DWC2 host port control and status register (HPRT): the controller is `USB_DWC` at
+/// 0x6008_0000 (esp32s3.peripherals.ld) and HPRT is at 0x440 in it (usb_dwc_struct.h).
+const HPRT: usize = 0x6008_0440;
+const HPRT_ATTACHED: u32 = 1 << 0;
+const HPRT_POWERED: u32 = 1 << 12;
+/// How long a device may sit attached to a powered port with nothing enumerated before its
+/// enumeration counts as abandoned. A healthy one is listed within about a second.
+const ABANDONED_AFTER: Duration = Duration::from_secs(2);
+const LONGEST_RETRY: Duration = Duration::from_secs(60);
 const REENUMERATE_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -219,8 +228,48 @@ impl UsbHost {
                 unsafe { sys::usb_host_client_handle_events(client.0, u32::MAX) };
             }
         });
+        spawn("usb-watch", retry_abandoned_enumerations);
         Ok(Self { shared })
     }
+}
+
+/// When an enumeration stage fails (CHECK_ADDR or CHECK_SHORT_DEV_DESC while a camera
+/// powers up, most often), IDF gives the device up: it stays attached and the port stays
+/// enabled, but nothing is ever listed and nothing looks at the port again until the
+/// device is unplugged. A device attached to a powered port with nothing enumerated is
+/// power-cycled, which enumerates it afresh.
+fn retry_abandoned_enumerations() {
+    let mut since: Option<Instant> = None;
+    let mut wait = ABANDONED_AFTER;
+    loop {
+        thread::sleep(Duration::from_millis(250));
+        let port = unsafe { ptr::read_volatile(HPRT as *const u32) };
+        let listed = enumerated() > 0;
+        if listed {
+            wait = ABANDONED_AFTER;
+        }
+        if listed || port & (HPRT_ATTACHED | HPRT_POWERED) != HPRT_ATTACHED | HPRT_POWERED {
+            since = None;
+            continue;
+        }
+        if since.get_or_insert_with(Instant::now).elapsed() < wait {
+            continue;
+        }
+        warn!("usb: a device is attached but was never enumerated; power-cycling the port");
+        unsafe { sys::usb_host_lib_set_root_port_power(false) };
+        thread::sleep(Duration::from_millis(500));
+        unsafe { sys::usb_host_lib_set_root_port_power(true) };
+        since = None;
+        wait = (wait * 2).min(LONGEST_RETRY);
+    }
+}
+
+/// How many devices finished enumerating: the list `list` answers from.
+fn enumerated() -> i32 {
+    let mut addresses = [0u8; 16];
+    let mut count = 0;
+    unsafe { sys::usb_host_device_addr_list_fill(addresses.len() as i32, addresses.as_mut_ptr(), &mut count) };
+    count
 }
 
 fn spawn(name: &str, body: impl FnOnce() + Send + 'static) {
