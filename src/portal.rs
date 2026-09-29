@@ -6,13 +6,14 @@
 //! API at `/x/api.cgi` (`package/wifi/files/api.cgi` in thingino-firmware): `get_info`, the
 //! four scan actions, and `save`, which writes the network to NVS and restarts. `get_info`
 //! advertises `wlan_psk` and `rootpass_hash`, so the app derives the Wi-Fi key on the phone
-//! and no passphrase crosses the open access point; the camera-only fields (root password,
-//! time zone, SSH key) are accepted and ignored. A catch-all DNS makes phones raise their
+//! and no passphrase crosses the open access point. It also advertises `wifi_only`: there is
+//! no root account, time zone, SSH key or access-point mode here, so an app that knows the
+//! flag leaves those out, and the fields an older app sends anyway are accepted and ignored
+//! (`rootpass_hash` stays advertised so that such an app still derives the key). A catch-all DNS makes phones raise their
 //! sign-in page, which is served at `/`. The dfu-remote daemon does not run here: the access
 //! point is open to anyone in range.
 
 use core::convert::Infallible;
-use core::ffi::CStr;
 use core::time::Duration;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::mpsc::{self, Sender};
@@ -227,18 +228,13 @@ fn info_json() -> String {
     let mut mac = [0u8; 6];
     unsafe { sys::esp_read_mac(mac.as_mut_ptr(), sys::esp_mac_type_t_ESP_MAC_WIFI_STA) };
     format!(
-        r#"{{"hostname": {}, "image_id": "thingino-backpack", "build_id": {}, "wlan_mac": "{}", "features": ["wlan_psk", "rootpass_hash"]}}"#,
+        r#"{{"hostname": {}, "image_id": "thingino-backpack", "build_id": {}, "wlan_mac": "{}", "features": ["wlan_psk", "rootpass_hash", "wifi_only"]}}"#,
         json_string(&wifi::default_hostname()),
-        json_string(&build_id()),
+        json_string(&crate::status::build_id()),
         mac_text(mac)
     )
 }
 
-/// The firmware version ESP-IDF stamped into the image: the project's `git describe`.
-fn build_id() -> String {
-    let desc = unsafe { &*sys::esp_app_get_description() };
-    unsafe { CStr::from_ptr(desc.version.as_ptr()) }.to_string_lossy().into_owned()
-}
 
 fn mac_text(mac: [u8; 6]) -> String {
     mac.iter().map(|byte| format!("{byte:02x}")).collect::<Vec<_>>().join(":")

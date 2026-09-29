@@ -43,3 +43,8 @@ tracing = { version = "0.1", default-features = false, features = ["std", "log"]
 
 [build-dependencies]
 embuild = "0.33"
+
+# Espressif's mDNS responder, a managed component since ESP-IDF 5.0, fetched from the
+# component registry at build time.
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/mdns", version = "1.8" }
