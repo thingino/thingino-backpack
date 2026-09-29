@@ -72,7 +72,7 @@ pub fn run(modem: Modem<'static>, sysloop: EspSystemEventLoop, nvs: EspDefaultNv
     let first = sweep(&mut wifi);
     wifi.stop().map_err(|err| err.to_string())?;
 
-    let ssid = format!("THINGINO-BACKPACK-{}", wifi::unit_suffix());
+    let ssid = wifi::portal_ssid();
     wifi.set_configuration(&Configuration::Mixed(
         ClientConfiguration::default(),
         AccessPointConfiguration {
@@ -385,7 +385,8 @@ fn save(nvs: &EspDefaultNvsPartition, form: &[(String, String)]) -> Result<(), S
     Ok(())
 }
 
-fn restart_soon() {
+/// Restarts in a moment, so the answer that asked for it reaches the client first.
+pub fn restart_soon() {
     let _ = thread::Builder::new()
         .name("restart".into())
         .stack_size(2048)

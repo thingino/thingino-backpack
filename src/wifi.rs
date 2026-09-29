@@ -85,6 +85,20 @@ pub fn store(nvs: &EspDefaultNvsPartition, ssid: &str, secret: &str, hostname: O
     Ok(())
 }
 
+/// Forgets the network and the hostname, so the next boot opens the setup portal.
+pub fn forget(nvs: &EspDefaultNvsPartition) -> Result<(), String> {
+    let store = EspNvs::new(nvs.clone(), NAMESPACE, true).map_err(|err| format!("opening NVS: {err}"))?;
+    for key in [SSID, SECRET, HOSTNAME] {
+        store.remove(key).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+/// The name of the setup portal's access point.
+pub fn portal_ssid() -> String {
+    format!("THINGINO-BACKPACK-{}", unit_suffix())
+}
+
 /// The last two octets of the access point MAC, as the thingino cameras name their portal.
 pub fn unit_suffix() -> String {
     let mut mac = [0u8; 6];

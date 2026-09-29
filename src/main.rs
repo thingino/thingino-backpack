@@ -77,19 +77,26 @@ fn run() -> Result<(), String> {
     let peripherals = Peripherals::take().map_err(|err| err.to_string())?;
     let sysloop = EspSystemEventLoop::take().map_err(|err| err.to_string())?;
     #[cfg(not(esp32p4))]
-    let (network, hostname) = {
+    let (network, hostname, reset) = {
         let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
         let Some(saved) = wifi::saved(&nvs)? else {
             // Nothing to join: the portal is all this boot does, until it is given a network.
             return portal::run(peripherals.modem, sysloop, nvs).map(|never| match never {});
         };
         let hostname = saved.hostname.clone();
-        (wifi::join(peripherals.modem, sysloop, nvs, saved)?, hostname)
+        let forget = nvs.clone();
+        let reset: status::Reset = Box::new(move || {
+            wifi::forget(&forget)?;
+            portal::restart_soon();
+            Ok(format!("Wi-Fi settings erased; restarting into the setup portal {}", wifi::portal_ssid()))
+        });
+        (wifi::join(peripherals.modem, sysloop, nvs, saved)?, hostname, Some(reset))
     };
+    // Ethernet has nothing to set up, so nothing to reset.
     #[cfg(esp32p4)]
-    let (network, hostname) = {
+    let (network, hostname, reset) = {
         let hostname = eth::default_hostname();
-        (eth::start(sysloop, &hostname)?, hostname)
+        (eth::start(sysloop, &hostname)?, hostname, None)
     };
     // Power, boot pin, UART TX and RX. The P4's are placeholders until a board is chosen:
     // clear of its Ethernet, console and strapping pins, and nothing more is known.
@@ -103,7 +110,7 @@ fn run() -> Result<(), String> {
     let camera = camera::start(power, boot, host.clone())?;
     console::start(peripherals.uart1, tx, rx, Arc::clone(&camera))?;
     // Findable as a camera is: the app's hub lists it and opens the page on port 80.
-    let status = status::start(&hostname, camera)?;
+    let status = status::start(&hostname, camera, reset)?;
     memory_report("after the network and USB host");
 
     // The daemon's operations are deep async state machines, and a transfer blocks the

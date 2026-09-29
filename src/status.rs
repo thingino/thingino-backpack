@@ -8,6 +8,8 @@
 //!   has gone unanswered, and power cycles done for recovery, as JSON.
 //! * `POST /api/camera?action=<action>`: one of [`Action::NAMES`]; answers
 //!   `{"ok":true,"message":...}` or `{"ok":false,"error":...}`.
+//! * `POST /api/wifi-reset`, on the Wi-Fi builds: forgets the network and restarts into the
+//!   setup portal. Same answers.
 
 use core::ffi::CStr;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -23,13 +25,17 @@ use tdfu_daemon::DEFAULT_PORT;
 use crate::camera::{self, Action, Camera};
 use crate::console;
 
+/// Forgets the saved network and restarts into the setup portal, answering what to tell the
+/// user.
+pub type Reset = Box<dyn Fn() -> Result<String, String> + Send + Sync + 'static>;
+
 /// The announcement and the page; dropping it ends both.
 pub struct Status {
     _mdns: EspMdns,
     _server: EspHttpServer<'static>,
 }
 
-pub fn start(hostname: &str, camera: Arc<Camera>) -> Result<Status, String> {
+pub fn start(hostname: &str, camera: Arc<Camera>, reset: Option<Reset>) -> Result<Status, String> {
     let mut mdns = EspMdns::take().map_err(|err| format!("mDNS: {err}"))?;
     mdns.set_hostname(hostname).map_err(|err| format!("mDNS: {err}"))?;
     mdns.set_instance_name(hostname).map_err(|err| format!("mDNS: {err}"))?;
@@ -47,12 +53,24 @@ pub fn start(hostname: &str, camera: Arc<Camera>) -> Result<Status, String> {
     .map_err(|err| format!("status page: {err}"))?;
     let name = hostname.to_owned();
     let pins = camera.pins();
+    let resettable = reset.is_some();
     server
         .fn_handler("/", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
             req.into_response(200, None, &[("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])?
-                .write_all(page(&name, pins).as_bytes())
+                .write_all(page(&name, pins, resettable).as_bytes())
         })
         .map_err(|err| format!("status page: {err}"))?;
+    if let Some(reset) = reset {
+        server
+            .fn_handler("/api/wifi-reset", Method::Post, move |req: Request<&mut EspHttpConnection<'_>>| {
+                let body = match reset() {
+                    Ok(message) => format!(r#"{{"ok":true,"message":"{}"}}"#, json_escape(&message)),
+                    Err(error) => format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(&error)),
+                };
+                json(req, &body)
+            })
+            .map_err(|err| format!("status page: {err}"))?;
+    }
     let watched = Arc::clone(&camera);
     server
         .fn_handler("/api/camera", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
@@ -117,8 +135,9 @@ fn endpoints() -> Vec<String> {
     out
 }
 
-/// `camera` is the power and boot pin GPIOs.
-fn page(hostname: &str, camera: (i32, i32)) -> String {
+/// `camera` is the power and boot pin GPIOs; `resettable`, whether the unit has a Wi-Fi
+/// setup to go back to.
+fn page(hostname: &str, camera: (i32, i32), resettable: bool) -> String {
     let name = escape(hostname);
     let endpoints = endpoints();
     // The mDNS name survives a DHCP renumbering and an ISP prefix change; the addresses
@@ -159,7 +178,8 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 <p>For tools that set the baud rate or send a break, RFC 2217 on port {rfc2217}: <code>rfc2217://{name}.local:{rfc2217}</code>. Its DTR holds the boot pin and RTS cuts the power, as esptool's auto-reset drives an ESP32's IO0 and EN; both or neither asserted, as a terminal opens, leaves the camera alone.</p>
 <h2>Camera</h2>
 <p id="cam" class="dim">&nbsp;</p>
-<p class="buttons"><button data-a="power-cycle">Power cycle</button> <button data-a="bootrom">Enter bootrom</button> <button data-a="power-off">Power off</button> <button data-a="power-on">Power on</button> <button data-a="boot-hold">Hold boot pin</button> <button data-a="boot-release">Release boot pin</button></p>
+<p class="buttons"><button data-a="power-cycle" title="Cut the camera's power for a second, then turn it back on">Power cycle</button> <button data-a="bootrom" title="Hold the boot pin through a power cycle, and let go once the bootrom shows up on USB">Enter bootrom</button> <button data-a="power-off" title="Cut the camera's power">Power off</button> <button data-a="power-on" title="Turn the camera's power on">Power on</button> <button data-a="boot-hold" title="Pull the camera's flash DI low, so its next power-on boots from USB">Hold boot pin</button> <button data-a="boot-release" title="Let go of the boot pin">Release boot pin</button></p>
+<p class="dim">Enter bootrom holds the boot pin through a power cycle, so the camera boots from USB, and lets go of the pin once the bootrom enumerates: then <code>thingino-dfu -b</code> brings up the DFU gadget.</p>
 <p id="said"></p>
 <h2>Wiring</h2>
 <table>
@@ -170,6 +190,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 <tr><td>{usb}</td><td>camera USB ({usb_port})</td></tr>
 <tr><td>GND</td><td>camera ground</td></tr>
 </table>
+{setup}
 {script}
 </body>
 </html>
@@ -181,6 +202,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
         console = console::PORT,
         rfc2217 = console::RFC2217_PORT,
         script = CAMERA_SCRIPT,
+        setup = if resettable { SETUP_SECTION } else { "" },
         power = camera.0,
         boot = camera.1,
         tx = console::pins().0,
@@ -200,6 +222,21 @@ fn chip() -> String {
     CStr::from_bytes_until_nul(sys::CONFIG_IDF_TARGET)
         .map_or_else(|_| "an ESP32".into(), |chip| chip.to_string_lossy().into_owned())
 }
+
+/// Going back to the setup portal, on the Wi-Fi builds.
+const SETUP_SECTION: &str = r#"<h2>Setup</h2>
+<p>Forget this network and the hostname, and restart into the setup portal, as on first boot.</p>
+<p class="buttons"><button id="wifi-reset" title="Forget the network and the hostname, and restart into the setup portal">Reset Wi-Fi</button></p>
+<p id="reset-said"></p>
+<script>
+document.getElementById('wifi-reset').onclick = () => {
+  if (!confirm('Forget the Wi-Fi settings and restart into the setup portal? The backpack leaves this network.')) return;
+  const said = document.getElementById('reset-said');
+  fetch('/api/wifi-reset', { method: 'POST' }).then((r) => r.json())
+    .then((r) => { said.textContent = r.ok ? r.message : r.error; })
+    .catch(() => { said.textContent = 'The backpack did not answer.'; });
+};
+</script>"#;
 
 /// The camera section's buttons and its state, refreshed every few seconds.
 const CAMERA_SCRIPT: &str = r"<script>
