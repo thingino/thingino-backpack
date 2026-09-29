@@ -36,23 +36,29 @@ const NO_FIRMWARE_DIR: &str = "/no-loaders";
 /// 34 KB.
 const STREAM_ABOVE: u32 = 64 * 1024;
 
+/// The daemon's deepest path, a streamed write with its verify, peaks at about 35 KB.
+const DAEMON_STACK: usize = 48 * 1024;
+
+const REPORT_EVERY: Duration = Duration::from_secs(10);
+/// Every sixth memory report is followed by one of every task's stack.
+const STACKS_EVERY: u32 = 6;
+
 /// The daemon thread's FreeRTOS handle, for the memory report's stack high-water mark.
 static DAEMON_TASK: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
 
 fn main() {
     sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    // Once the daemon runs on its own thread this returns, and ESP-IDF deletes the main
+    // task and frees its stack.
     if let Err(err) = run() {
         error!("{err}");
-    }
-    loop {
-        std::thread::sleep(Duration::from_secs(3600));
     }
 }
 
 fn run() -> Result<(), String> {
     // tokio's reactor (mio) wakes itself through an eventfd.
-    let _eventfs = MountedEventfs::mount(4).map_err(|err| format!("eventfd: {err}"))?;
+    let eventfs = MountedEventfs::mount(4).map_err(|err| format!("eventfd: {err}"))?;
     let peripherals = Peripherals::take().map_err(|err| err.to_string())?;
     let sysloop = EspSystemEventLoop::take().map_err(|err| err.to_string())?;
     let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
@@ -61,29 +67,23 @@ fn run() -> Result<(), String> {
         return portal::run(peripherals.modem, sysloop, nvs).map(|never| match never {});
     };
     let hostname = saved.hostname.clone();
-    let _wifi = wifi::join(peripherals.modem, sysloop, nvs, saved)?;
+    let wifi = wifi::join(peripherals.modem, sysloop, nvs, saved)?;
     // Findable as a camera is: the app's hub lists it and opens the page on port 80.
-    let _status = status::start(&hostname)?;
+    let status = status::start(&hostname)?;
     console::start(peripherals.uart1, peripherals.pins.gpio17, peripherals.pins.gpio18)?;
     let host = UsbHost::install().map_err(|err| err.to_string())?;
     memory_report("after Wi-Fi and USB host");
-    std::thread::Builder::new()
-        .name("memory".into())
-        .stack_size(4096)
-        .spawn(|| loop {
-            std::thread::sleep(Duration::from_secs(10));
-            memory_report("periodic");
-        })
-        .map_err(|err| err.to_string())?;
 
     // The daemon's operations are deep async state machines, and a transfer blocks the
-    // runtime for its duration; one thread with a large stack serves one client at a time.
-    let daemon = std::thread::Builder::new()
+    // runtime for its duration; one thread serves one client at a time.
+    std::thread::Builder::new()
         .name("dfu-remote".into())
-        .stack_size(64 * 1024)
+        .stack_size(DAEMON_STACK)
         .spawn(move || daemon(host))
         .map_err(|err| err.to_string())?;
-    daemon.join().map_err(|_| "the daemon thread panicked".to_owned())
+    // These run for the life of the firmware, which the main task does not.
+    core::mem::forget((eventfs, wifi, status));
+    Ok(())
 }
 
 fn daemon(host: UsbHost) {
@@ -93,6 +93,17 @@ fn daemon(host: UsbHost) {
         Err(err) => return error!("tokio runtime: {err}"),
     };
     runtime.block_on(async move {
+        tokio::spawn(async {
+            let mut reports = 0u32;
+            loop {
+                tokio::time::sleep(REPORT_EVERY).await;
+                memory_report("periodic");
+                reports = reports.wrapping_add(1);
+                if reports % STACKS_EVERY == 0 {
+                    stacks_report();
+                }
+            }
+        });
         let addresses = [
             SocketAddr::from((Ipv6Addr::UNSPECIFIED, DEFAULT_PORT)),
             SocketAddr::from((Ipv4Addr::UNSPECIFIED, DEFAULT_PORT)),
@@ -134,6 +145,31 @@ fn memory_report(when: &str) {
         unused(&DAEMON_TASK),
         unused(&console::TASK)
     );
+}
+
+/// Every task's unused stack: what each could give up. Threads spawned from Rust are all
+/// named `pthread`; the daemon and the console are named from their handles.
+fn stacks_report() {
+    let count = unsafe { sys::uxTaskGetNumberOfTasks() };
+    let mut tasks: Vec<sys::TaskStatus_t> = Vec::with_capacity(count as usize + 2);
+    let filled = unsafe { sys::uxTaskGetSystemState(tasks.as_mut_ptr(), count + 2, core::ptr::null_mut()) };
+    // SAFETY: uxTaskGetSystemState initialised the first `filled` entries.
+    unsafe { tasks.set_len((filled as usize).min(tasks.capacity())) };
+    let daemon = DAEMON_TASK.load(Ordering::Relaxed);
+    let console = console::TASK.load(Ordering::Relaxed);
+    let mut line = String::new();
+    for task in &tasks {
+        let handle: *mut core::ffi::c_void = task.xHandle.cast();
+        let name = if handle == daemon {
+            "dfu-remote".into()
+        } else if handle == console {
+            "console".into()
+        } else {
+            unsafe { core::ffi::CStr::from_ptr(task.pcTaskName) }.to_string_lossy()
+        };
+        line.push_str(&format!(" {name} {}", task.usStackHighWaterMark));
+    }
+    info!("stacks unused:{line}");
 }
 
 /// There is nothing to interrupt the daemon on the unit; power is the off switch.

@@ -28,9 +28,11 @@ pub fn start(hostname: &str) -> Result<Status, String> {
         .map_err(|err| format!("mDNS: {err}"))?;
 
     // lwIP's socket budget is shared with the daemon and mDNS, and one browser at a time
-    // is all a status page sees.
+    // is all a status page sees. The one handler formats onto the heap, so the task needs
+    // ESP-IDF's own default stack rather than esp-idf-svc's 6 KB.
     let mut server = EspHttpServer::new(&Configuration {
         max_open_sockets: 3,
+        stack_size: 4096,
         ..Default::default()
     })
     .map_err(|err| format!("status page: {err}"))?;

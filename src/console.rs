@@ -56,7 +56,7 @@ pub fn start(uart: impl Uart + 'static, tx: impl OutputPin + 'static, rx: impl I
     info!("console: UART{} on port {PORT}", uart.port());
     std::thread::Builder::new()
         .name("console".into())
-        .stack_size(5 * 1024)
+        .stack_size(4096)
         .spawn(move || {
             TASK.store(unsafe { sys::xTaskGetCurrentTaskHandle() }.cast(), Ordering::Relaxed);
             serve(&uart, &ready, &listener);
