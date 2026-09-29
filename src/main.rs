@@ -9,13 +9,10 @@ use core::time::Duration;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::handle::RawHandle;
 use esp_idf_svc::io::vfs::MountedEventfs;
-use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys;
-use esp_idf_svc::wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi};
 use log::{error, info};
 use tdfu_daemon::auth::Auth;
 use tdfu_daemon::commands::state::{DaemonState, ReadStaging};
@@ -24,6 +21,8 @@ use tdfu_daemon::transport::{Origins, Timeouts};
 use tdfu_daemon::{listen, TokioClock, DEFAULT_PORT};
 
 use thingino_backpack::usbhost::UsbHost;
+
+mod wifi;
 
 /// Where the daemon would look for loaders. Deliberately empty: the client streams the
 /// loader pair with BOOTSTRAP, so nothing is stored on the unit.
@@ -54,7 +53,7 @@ fn run() -> Result<(), String> {
     let peripherals = Peripherals::take().map_err(|err| err.to_string())?;
     let sysloop = EspSystemEventLoop::take().map_err(|err| err.to_string())?;
     let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
-    let _wifi = connect_wifi(peripherals.modem, sysloop, nvs)?;
+    let _wifi = wifi::join(peripherals.modem, sysloop, nvs)?;
     let host = UsbHost::install().map_err(|err| err.to_string())?;
     memory_report("after Wi-Fi and USB host");
     std::thread::Builder::new()
@@ -128,47 +127,4 @@ impl Signals for NoSignals {
     async fn next(&mut self) {
         core::future::pending::<()>().await;
     }
-}
-
-/// Joins the network saved in NVS: the namespace and keys usbipdcpp_esp32 uses, so a board
-/// provisioned by that firmware keeps its credentials.
-fn connect_wifi(
-    modem: Modem<'static>,
-    sysloop: EspSystemEventLoop,
-    nvs: EspDefaultNvsPartition,
-) -> Result<BlockingWifi<EspWifi<'static>>, String> {
-    let (ssid, password) = saved_credentials(&nvs)?;
-    let driver = EspWifi::new(modem, sysloop.clone(), Some(nvs)).map_err(|err| err.to_string())?;
-    let mut wifi = BlockingWifi::wrap(driver, sysloop).map_err(|err| err.to_string())?;
-    wifi.set_configuration(&Configuration::Client(ClientConfiguration {
-        ssid: ssid.as_str().try_into().map_err(|_| "saved SSID is too long".to_owned())?,
-        password: password.as_str().try_into().map_err(|_| "saved password is too long".to_owned())?,
-        auth_method: if password.is_empty() { AuthMethod::None } else { AuthMethod::WPA2Personal },
-        ..Default::default()
-    }))
-    .map_err(|err| err.to_string())?;
-    wifi.start().map_err(|err| err.to_string())?;
-    wifi.connect().map_err(|err| format!("joining {ssid}: {err}"))?;
-    wifi.wait_netif_up().map_err(|err| err.to_string())?;
-    // Every DFU block is a request/response pair; modem sleep adds 100 ms stalls to each.
-    unsafe { sys::esp_wifi_set_ps(sys::wifi_ps_type_t_WIFI_PS_NONE) };
-    let netif = wifi.wifi().sta_netif();
-    unsafe { sys::esp_netif_create_ip6_linklocal(netif.handle()) };
-    match netif.get_ip_info() {
-        Ok(ip) => info!("wifi: joined {ssid}, {}", ip.ip),
-        Err(err) => info!("wifi: joined {ssid} (no IPv4 info: {err})"),
-    }
-    Ok(wifi)
-}
-
-fn saved_credentials(nvs: &EspDefaultNvsPartition) -> Result<(String, String), String> {
-    let store = EspNvs::new(nvs.clone(), "wifi", false).map_err(|err| format!("no saved Wi-Fi: {err}"))?;
-    let mut buf = [0u8; 100];
-    let ssid = store
-        .get_str("ssid", &mut buf)
-        .map_err(|err| err.to_string())?
-        .ok_or("no saved SSID")?
-        .to_owned();
-    let password = store.get_str("passwd", &mut buf).map_err(|err| err.to_string())?.unwrap_or("").to_owned();
-    Ok((ssid, password))
 }
