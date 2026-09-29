@@ -8,7 +8,9 @@
 //! `reset` power-cycles the root port.
 
 use core::ffi::{c_void, CStr};
+use core::future::poll_fn;
 use core::ptr;
+use core::task::Poll;
 use core::time::Duration;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -668,9 +670,27 @@ impl Drop for EspTransport {
     }
 }
 
+/// Let the executor run once. A transfer here blocks the calling thread until the device
+/// answers, so without this an operation's whole transfer loop would run inside a single
+/// poll, and whatever drives it (the daemon's progress pump) could send nothing until the
+/// loop ended, while every progress event piled up in its queue.
+async fn yield_now() {
+    let mut yielded = false;
+    poll_fn(|cx| {
+        if yielded {
+            Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await;
+}
+
 impl LocalUsbTransport for EspTransport {
     async fn control_in(&self, req: ControlIn, timeout: Duration) -> Result<Vec<u8>, UsbError> {
-        self.control(
+        let answer = self.control(
             Direction::In,
             req.control_type,
             req.recipient,
@@ -680,11 +700,13 @@ impl LocalUsbTransport for EspTransport {
             &[],
             req.len,
             timeout,
-        )
+        );
+        yield_now().await;
+        answer
     }
 
     async fn control_out(&self, req: ControlOut<'_>, timeout: Duration) -> Result<(), UsbError> {
-        self.control(
+        let answer = self.control(
             Direction::Out,
             req.control_type,
             req.recipient,
@@ -694,8 +716,9 @@ impl LocalUsbTransport for EspTransport {
             req.data,
             0,
             timeout,
-        )
-        .map(drop)
+        );
+        yield_now().await;
+        answer.map(drop)
     }
 
     async fn bulk_out(&self, data: &[u8], timeout: Duration) -> Result<usize, UsbError> {
@@ -705,6 +728,7 @@ impl LocalUsbTransport for EspTransport {
         let pipe = Pipe::Bulk(endpoint);
         let mut sent = 0;
         for chunk in data.chunks(CHUNK) {
+            yield_now().await;
             let mut transfer = Transfer::alloc(chunk.len(), pipe, None)?;
             transfer.buffer()[..chunk.len()].copy_from_slice(chunk);
             transfer.prepare(self.dev(), endpoint.address(), chunk.len());
@@ -735,6 +759,7 @@ impl LocalUsbTransport for EspTransport {
         let pipe = Pipe::Bulk(endpoint);
         let mut out = Vec::with_capacity(len);
         while out.len() < len {
+            yield_now().await;
             let want = (len - out.len()).min(CHUNK);
             let request = want.div_ceil(mps) * mps;
             let mut transfer = Transfer::alloc(request, pipe, None)?;
