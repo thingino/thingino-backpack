@@ -1,0 +1,237 @@
+name: Build
+
+# Builds the flash images for every chip on each push and pull request, and publishes them
+# as a release on a v* tag. Per chip, a release carries one image to write at 0x0 for a
+# first install, which erases the saved Wi-Fi, and the app alone for an update, which keeps
+# it. The job bodies are ./image.sh, so a local build and a released one cannot drift.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Pinned as thingino-dfu-rs pins its ESP-IDF job: an exact release, and the sha256 of each
+  # asset as it was when the pin was written, checked against this file rather than
+  # anything beside the asset. Bumping one means recording its checksum in the same commit:
+  #   gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[] | [.name,.digest] | @tsv'
+  #
+  # The Rust toolchain with the Xtensa targets (the S2 and S3 are not upstream targets); the
+  # P4's RISC-V target is built from its rust-src.
+  ESP_RUST_VERSION: "1.97.0.0"
+  ESP_RUST_SHA256: "a99bfee69221e9ff6d86388f6811ee688cd405e6a0400a3cd1784e8d463e9d99"
+  ESP_RUST_SRC_SHA256: "568d688b9f8f332ec4d04657544fad23e99ce11e9e6cf5835979e68a28c68b73"
+  # The libclang bindgen needs to read ESP-IDF's headers.
+  ESP_CLANG_VERSION: "esp-20.1.1_20250829"
+  ESP_CLANG_SHA256: "0128e2a86b262e3edfce026034ede07e2f45732b10c6cb8ac522c8f4c72befd8"
+  # ESP-IDF by commit, which pins its submodules as well; the tag only names the clone.
+  # The compilers it installs are checked against the sha256s in its own tools.json.
+  ESP_IDF_TAG: "v5.5.5"
+  ESP_IDF_COMMIT: "b774170ff46c393eeb5e495ea37936038d3f4f4f"
+  ESP_IDF_TOOLS_INSTALL_DIR: global
+  # espflash writes the images and ldproxy links them. GitHub recorded no digest for
+  # ldproxy's 2022 asset, so its sha256 is the one taken when the pin was written.
+  ESPFLASH_VERSION: "v4.6.0"
+  ESPFLASH_SHA256: "c4fcfa32ddc3155608f003a230e6f3c184eff9641ec9cfa8eb54f1b515d403e7"
+  LDPROXY_TAG: "ldproxy-v0.3.2"
+  LDPROXY_SHA256: "fb7792b951ef5540bea3d840b6f38545dc202f78fcd73009d384c14c3f0a1ad2"
+
+jobs:
+  images:
+    name: images (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `variant` is image.sh's argument; `family` decides which compilers ESP-IDF
+          # installs, and so which toolchain cache a job shares.
+          - { name: esp32s3, variant: "", family: xtensa }
+          - { name: esp32s3-psram, variant: psram, family: xtensa }
+          - { name: esp32s2, variant: s2, family: xtensa }
+          - { name: esp32p4, variant: p4, family: riscv }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out
+        run: |
+          git init -q .
+          # The token on the fetch, never in .git/config.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+            fetch -q --depth 1 --no-tags "https://github.com/${GITHUB_REPOSITORY}" "$SHA"
+          git checkout -q FETCH_HEAD
+          # The firmware's version is `git describe`, so a tag build fetches its tag.
+          case "$GITHUB_REF" in
+          refs/tags/*)
+            git -c http.extraheader="AUTHORIZATION: basic $auth" \
+              fetch -q --depth 1 --no-tags "https://github.com/${GITHUB_REPOSITORY}" "+$GITHUB_REF:$GITHUB_REF"
+            ;;
+          esac
+
+      - name: Environment
+        run: |
+          {
+            echo "IDF_PATH=$HOME/esp/esp-idf"
+            echo "LIBCLANG_PATH=$HOME/.rustup/toolchains/esp/xtensa-esp32-elf-clang/$ESP_CLANG_VERSION/esp-clang/lib"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The toolchains are most of the run: the Rust toolchain, libclang, ESP-IDF and the
+      # compilers it installs. They are cached under their pins, so a run downloads them
+      # again only when a pin moves. `actions/cache` is used because gh can list and
+      # delete caches but cannot save or restore one; it is pinned by commit.
+      - name: Restore the toolchains
+        id: toolchains
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/esp
+            ~/esp/esp-idf
+            ~/.espressif
+          key: backpack-toolchains-${{ runner.os }}-${{ matrix.family }}-${{ env.ESP_RUST_VERSION }}-${{ env.ESP_CLANG_VERSION }}-${{ env.ESP_IDF_COMMIT }}
+
+      - name: Install the Rust toolchain and libclang
+        if: steps.toolchains.outputs.cache-hit != 'true'
+        run: |
+          tmp=$(mktemp -d)
+          rust="rust-${ESP_RUST_VERSION}-x86_64-unknown-linux-gnu"
+          src="rust-src-${ESP_RUST_VERSION}"
+          gh release download "v${ESP_RUST_VERSION}" -R esp-rs/rust-build \
+            --pattern "$rust.tar.xz" --pattern "$src.tar.xz" --dir "$tmp"
+          ( cd "$tmp" && printf '%s  %s\n' "$ESP_RUST_SHA256" "$rust.tar.xz" "$ESP_RUST_SRC_SHA256" "$src.tar.xz" \
+              | sha256sum -c - )
+          # The archives unpack as `rust-nightly-*` and `rust-src-nightly`, whatever the
+          # version: stripped into directories named here instead.
+          mkdir "$tmp/rust" "$tmp/src"
+          tar xJf "$tmp/$rust.tar.xz" -C "$tmp/rust" --strip-components=1
+          tar xJf "$tmp/$src.tar.xz" -C "$tmp/src" --strip-components=1
+          # A directory under ~/.rustup/toolchains is a toolchain rustup knows by that name,
+          # and rust-toolchain.toml asks for `esp`.
+          dest="$HOME/.rustup/toolchains/esp"
+          bash "$tmp/rust/install.sh" --destdir="$dest" --prefix="" --disable-ldconfig \
+            --without=rust-docs-json-preview,rust-docs
+          bash "$tmp/src/install.sh" --destdir="$dest" --prefix="" --disable-ldconfig
+
+          clang="libs-clang-${ESP_CLANG_VERSION}-x86_64-linux-gnu.tar.xz"
+          gh release download "$ESP_CLANG_VERSION" -R espressif/llvm-project --pattern "$clang" --dir "$tmp"
+          ( cd "$tmp" && echo "$ESP_CLANG_SHA256  $clang" | sha256sum -c - )
+          mkdir -p "$dest/xtensa-esp32-elf-clang/$ESP_CLANG_VERSION"
+          tar xJf "$tmp/$clang" -C "$dest/xtensa-esp32-elf-clang/$ESP_CLANG_VERSION"
+          rm -rf "$tmp"
+
+      - name: Fetch ESP-IDF
+        if: steps.toolchains.outputs.cache-hit != 'true'
+        run: |
+          git clone -q --depth 1 --branch "$ESP_IDF_TAG" --recurse-submodules --shallow-submodules \
+            https://github.com/espressif/esp-idf "$IDF_PATH"
+          got=$(git -C "$IDF_PATH" rev-parse HEAD)
+          test "$got" = "$ESP_IDF_COMMIT" || { echo "$ESP_IDF_TAG is $got, not $ESP_IDF_COMMIT"; exit 1; }
+
+      - name: Install espflash and ldproxy
+        run: |
+          tmp=$(mktemp -d)
+          gh release download "$ESPFLASH_VERSION" -R esp-rs/espflash \
+            --pattern espflash-x86_64-unknown-linux-gnu.zip --dir "$tmp"
+          gh release download "$LDPROXY_TAG" -R esp-rs/embuild \
+            --pattern ldproxy-x86_64-unknown-linux-gnu.zip --dir "$tmp"
+          ( cd "$tmp" && printf '%s  %s\n' \
+              "$ESPFLASH_SHA256" espflash-x86_64-unknown-linux-gnu.zip \
+              "$LDPROXY_SHA256" ldproxy-x86_64-unknown-linux-gnu.zip | sha256sum -c - )
+          unzip -q -o "$tmp/espflash-x86_64-unknown-linux-gnu.zip" -d "$HOME/.local/bin"
+          unzip -q -o "$tmp/ldproxy-x86_64-unknown-linux-gnu.zip" -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/espflash" "$HOME/.local/bin/ldproxy"
+          rm -rf "$tmp"
+          espflash --version
+
+      - name: Build
+        id: build
+        run: ./image.sh ${{ matrix.variant }}
+
+      # After the build, which installs ESP-IDF's compilers into ~/.espressif, so the cache
+      # is saved complete.
+      - name: Save the toolchains
+        if: always() && steps.build.outcome == 'success' && steps.toolchains.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/esp
+            ~/esp/esp-idf
+            ~/.espressif
+          key: ${{ steps.toolchains.outputs.cache-primary-key }}
+
+      - name: Name the images
+        run: |
+          dir=images${{ matrix.variant && format('/{0}', matrix.variant) || '' }}
+          mkdir dist
+          cp "$dir/full.bin" "dist/thingino-backpack-${{ matrix.name }}.bin"
+          cp "$dir/app.bin" "dist/thingino-backpack-${{ matrix.name }}-app.bin"
+          ls -l dist
+
+      - name: Upload the images
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: images-${{ matrix.name }}
+          path: dist/*.bin
+          if-no-files-found: error
+
+  release:
+    # A tag push only: a dispatch pointed at a tag builds and uploads, and publishes nothing.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download the images
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: images-*
+          merge-multiple: true
+          path: dist
+
+      # Two images per chip, four chips: a leg that produced nothing must not become a
+      # release with a download missing.
+      - name: Gather
+        run: |
+          cd dist
+          count=$(ls *.bin | wc -l)
+          test "$count" = 8 || { echo "expected 8 images, have $count:"; ls -l; exit 1; }
+          sha256sum *.bin > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        run: |
+          pre=
+          case "$GITHUB_REF_NAME" in *-*) pre=--prerelease ;; esac
+          cat > notes.md <<'EOF'
+          Per chip, `thingino-backpack-<chip>.bin` is a first install: write it at 0x0. It holds
+          the bootloader, the partition table and the app, and erases the saved Wi-Fi, so the
+          unit starts in its setup portal. `thingino-backpack-<chip>-app.bin` is an update that
+          keeps the Wi-Fi settings: write it at 0x10000.
+
+              esptool.py --chip esp32s3 write_flash 0x0 thingino-backpack-esp32s3.bin
+              esptool.py --chip esp32s3 write_flash 0x10000 thingino-backpack-esp32s3-app.bin
+
+          `esp32s3` needs no PSRAM, `esp32s3-psram` is for modules with octal PSRAM. The
+          `esp32s2` and `esp32p4` images are untested on hardware; see the README.
+          EOF
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag $pre \
+            --title "thingino-backpack ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes \
+            dist/*.bin dist/SHA256SUMS

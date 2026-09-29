@@ -12,7 +12,8 @@ nothing else attached:
   can put the camera into the bootrom on request and power-cycle one that stopped
   answering on USB.
 - **Findable like a camera.** A thingino-style Wi-Fi setup portal on first boot, then mDNS
-  `_thingino._tcp` and a status page, which the thingino app lists and opens.
+  `_thingino._tcp` and a status page, which the
+  [thingino app](https://github.com/thingino/thingino-app) lists and opens.
 
 Nothing is stored on the unit: the client sends the loader pair with each bootstrap, and
 images stream through it, so the default build runs without PSRAM.
@@ -62,6 +63,25 @@ images stream through it, so the default build runs without PSRAM.
   most boards bring out through their USB-UART bridge. The OTG port belongs to the camera.
 - The pins are set in `src/main.rs`, per chip; the status page lists the ones in use.
 
+## Flashing a release
+
+Each [release](https://github.com/thingino/thingino-backpack/releases) has two images per
+chip (`esp32s3`, `esp32s3-psram`, `esp32s2`, `esp32p4`) and a `SHA256SUMS`:
+
+- `thingino-backpack-<chip>.bin` is a first install: the bootloader, the partition table
+  and the app in one image, written at 0x0. It erases the saved Wi-Fi, so the unit starts
+  in its setup portal.
+- `thingino-backpack-<chip>-app.bin` is an update: written at 0x10000, it keeps the Wi-Fi
+  settings.
+
+```sh
+esptool.py --chip esp32s3 write_flash 0x0 thingino-backpack-esp32s3.bin
+esptool.py --chip esp32s3 write_flash 0x10000 thingino-backpack-esp32s3-app.bin
+```
+
+The images are built for 4 MB of flash and boot on 4, 8 and 16 MB modules. CI builds all
+four on every push and publishes them when a `v*` tag is pushed.
+
 ## Building
 
 Requirements:
@@ -75,7 +95,7 @@ Cargo fetches the daemon, the DFU core and the ESP-IDF USB host backend from
 [thingino-dfu-rs](https://github.com/thingino/thingino-dfu-rs) at its v2.1.0 release.
 
 ```sh
-./image.sh          # ESP32-S3, images/: bootloader.bin, partition-table.bin, app.bin
+./image.sh          # ESP32-S3, images/: bootloader.bin, partition-table.bin, app.bin, full.bin
 ./image.sh psram    # ESP32-S3 with octal PSRAM, images/psram/
 ./image.sh s2       # ESP32-S2, images/s2/
 ./image.sh p4       # ESP32-P4, images/p4/
@@ -84,15 +104,15 @@ Cargo fetches the daemon, the DFU core and the ESP-IDF USB host backend from
 The first build of each compiles ESP-IDF and takes a while; each builds in a target
 directory of its own.
 
-Flash all three images once, with the chip and the directory that match:
+`full.bin` is the other three in one image, the one a release calls
+`thingino-backpack-<chip>.bin`. Flash it once, with the chip and the directory that match:
 
 ```sh
-esptool.py --chip esp32s3 write_flash \
-  0x0 images/bootloader.bin 0x8000 images/partition-table.bin 0x10000 images/app.bin
+esptool.py --chip esp32s3 write_flash 0x0 images/full.bin
 ```
 
 After that, `write_flash 0x10000 images/app.bin` updates the firmware and keeps the saved
-Wi-Fi settings. The image is built for 4 MB of flash and boots on 4, 8 and 16 MB modules.
+Wi-Fi settings.
 
 ## First boot
 
@@ -101,14 +121,18 @@ with no saved network, open an access point named `THINGINO-BACKPACK-xxxx` (the
 last four hex digits of its MAC) at 172.16.0.1, and answer the thingino cameras' setup
 API. Either:
 
-- use the thingino app, which finds it by the `THINGINO-` prefix and derives the Wi-Fi key
-  on the phone, or
+- use the [thingino app](https://github.com/thingino/thingino-app), which finds it by the
+  `THINGINO-` prefix and derives the Wi-Fi key on the phone, or
 - join the access point and open http://172.16.0.1/ (most phones open it by themselves).
 
 Enter the network, its passphrase, and a hostname (default `thingino-backpack-xxxx`). The
 unit restarts and joins. It keeps rejoining after any outage, takes IPv6 addresses by
-SLAAC as well as DHCPv4, and announces itself over mDNS. To set it up again, erase the NVS
-partition (`esptool.py erase_region 0x9000 0x6000`).
+SLAAC as well as DHCPv4, and announces itself over mDNS.
+
+To set it up again, press **Reset Wi-Fi** on the status page (or `curl -X POST
+http://<host>.local/api/wifi-reset`): it forgets the network and the hostname and restarts
+into the setup portal. Erasing the NVS partition (`esptool.py erase_region 0x9000 0x6000`)
+does the same without a network.
 
 ## Using it
 
