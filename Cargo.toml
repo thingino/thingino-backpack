@@ -18,6 +18,10 @@ debug = true
 debug = true
 opt-level = "z"
 
+[features]
+# Read U-Boot back out of DDR through the bootrom before the jump (adds ~10 s).
+verify-uboot = []
+
 [dependencies]
 log = "0.4"
 esp-idf-svc = "0.53"

@@ -14,14 +14,20 @@ use std::time::Instant;
 use esp_idf_svc::sys;
 use log::{error, info, warn};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "verify-uboot")]
 use tdfu_core::addr::Kseg1;
+#[cfg(feature = "verify-uboot")]
 use tdfu_core::bootrom;
 use tdfu_core::clock::BlockingClock;
 use tdfu_core::ops::{self, Stage};
-use tdfu_core::{AltSel, Phase, Progress};
+#[cfg(feature = "verify-uboot")]
+use tdfu_core::Phase;
+use tdfu_core::{AltSel, Progress};
 use tdfu_usb::{vid, ControlIn, ControlType, Discovered, LocalUsbBackend, LocalUsbTransport, Recipient};
 
-use crate::usbhost::{EspTransport, UsbHost};
+#[cfg(feature = "verify-uboot")]
+use crate::usbhost::EspTransport;
+use crate::usbhost::UsbHost;
 
 static STAGE1: &[u8] = include_bytes!("../loaders/t31x/tpl.bin");
 static UBOOT: &[u8] = include_bytes!("../loaders/t31x/uboot.bin");
@@ -29,6 +35,7 @@ static UBOOT: &[u8] = include_bytes!("../loaders/t31x/uboot.bin");
 /// The test camera's flash: the random image written to it over USB/IP on 2026-09-28.
 const EXPECTED_SHA256: &str = "a1ea2d5956e6d5c0772c9aacab10d56002b1ba2c910120a177861bff31dc47d2";
 const GADGET_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(feature = "verify-uboot")]
 const READBACK_CHUNK: usize = 16 * 1024;
 
 fn main() {
@@ -74,7 +81,11 @@ fn attempt(host: &UsbHost) -> Result<(), String> {
         let detection = block_on(ops::detect(&dev, &clock)).map_err(|err| err.to_string())?;
         info!("detected in {:?}: {detection:?}", started.elapsed());
         let started = Instant::now();
+        #[cfg(feature = "verify-uboot")]
         bootstrap_verified(&dev, &clock)?;
+        #[cfg(not(feature = "verify-uboot"))]
+        block_on(ops::bootstrap(&dev, &clock, STAGE1, UBOOT, &mut progress_logger()))
+            .map_err(|err| err.to_string())?;
         drop(dev);
         let sent = started.elapsed();
         match wait_for(host, Some(Stage::Gadget), Some(GADGET_TIMEOUT)) {
@@ -107,6 +118,7 @@ fn attempt(host: &UsbHost) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "verify-uboot")]
 /// `ops::bootstrap`, with U-Boot read back out of DDR between the cache flush and the
 /// jump. The readback goes through the uncached kseg1 alias and only after `FLUSH_CACHE`:
 /// before it, the image can still sit in the D-cache and DDR would compare stale.
