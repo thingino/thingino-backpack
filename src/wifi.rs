@@ -6,6 +6,7 @@
 //! attempt, backing off from one second to thirty.
 
 use core::time::Duration;
+use std::ffi::CString;
 use std::net::IpAddr;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -37,22 +38,85 @@ enum Change {
     Address(IpAddr),
 }
 
-/// Starts joining the network saved in NVS: the namespace and keys usbipdcpp_esp32 uses,
-/// so a board provisioned by that firmware keeps its credentials. Returns once the radio
-/// is up; the join completes in the background.
-pub fn join(modem: Modem<'static>, sysloop: EspSystemEventLoop, nvs: EspDefaultNvsPartition) -> Result<Station, String> {
-    let (ssid, password) = saved_credentials(&nvs)?;
+/// The NVS namespace and keys usbipdcpp_esp32 uses, so a board provisioned by that firmware
+/// keeps its credentials; `hostname` is this firmware's own.
+const NAMESPACE: &str = "wifi";
+const SSID: &str = "ssid";
+const SECRET: &str = "passwd";
+const HOSTNAME: &str = "hostname";
+
+/// The network to join, as saved in NVS.
+pub struct Saved {
+    pub ssid: String,
+    /// A passphrase, a 64-hex-digit PSK (which the driver takes as the key itself), or
+    /// empty for an open network.
+    pub secret: String,
+    pub hostname: String,
+}
+
+/// The saved network, or `None` on a board that has never been given one.
+pub fn saved(nvs: &EspDefaultNvsPartition) -> Result<Option<Saved>, String> {
+    // Read-write, so a fresh board's missing namespace is created rather than an error.
+    let store = EspNvs::new(nvs.clone(), NAMESPACE, true).map_err(|err| format!("opening NVS: {err}"))?;
+    let read = |key: &str| -> Result<Option<String>, String> {
+        let mut buf = [0u8; 100];
+        Ok(store.get_str(key, &mut buf).map_err(|err| err.to_string())?.map(str::to_owned))
+    };
+    let Some(ssid) = read(SSID)?.filter(|ssid| !ssid.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(Saved {
+        ssid,
+        secret: read(SECRET)?.unwrap_or_default(),
+        hostname: read(HOSTNAME)?.filter(|name| !name.is_empty()).unwrap_or_else(default_hostname),
+    }))
+}
+
+/// Saves the network to join, and the hostname when one is given.
+pub fn store(nvs: &EspDefaultNvsPartition, ssid: &str, secret: &str, hostname: Option<&str>) -> Result<(), String> {
+    let store = EspNvs::new(nvs.clone(), NAMESPACE, true).map_err(|err| format!("opening NVS: {err}"))?;
+    store.set_str(SSID, ssid).map_err(|err| err.to_string())?;
+    store.set_str(SECRET, secret).map_err(|err| err.to_string())?;
+    if let Some(hostname) = hostname {
+        store.set_str(HOSTNAME, hostname).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+/// The last two octets of the access point MAC, as the thingino cameras name their portal.
+pub fn unit_suffix() -> String {
+    let mut mac = [0u8; 6];
+    unsafe { sys::esp_read_mac(mac.as_mut_ptr(), sys::esp_mac_type_t_ESP_MAC_WIFI_SOFTAP) };
+    format!("{:02x}{:02x}", mac[4], mac[5])
+}
+
+pub fn default_hostname() -> String {
+    format!("thingino-backpack-{}", unit_suffix())
+}
+
+/// Starts joining `saved`. Returns once the radio is up; the join completes in the
+/// background.
+pub fn join(
+    modem: Modem<'static>,
+    sysloop: EspSystemEventLoop,
+    nvs: EspDefaultNvsPartition,
+    saved: Saved,
+) -> Result<Station, String> {
+    let Saved { ssid, secret, hostname } = saved;
     let driver = WifiDriver::new(modem, sysloop.clone(), Some(nvs)).map_err(|err| err.to_string())?;
     let sta = EspNetif::new_with_conf(&sta_configuration()).map_err(|err| err.to_string())?;
     let ap = EspNetif::new(NetifStack::Ap).map_err(|err| err.to_string())?;
     let mut wifi = EspWifi::wrap_all(driver, sta, ap).map_err(|err| err.to_string())?;
     wifi.set_configuration(&Configuration::Client(ClientConfiguration {
         ssid: ssid.as_str().try_into().map_err(|_| "saved SSID is too long".to_owned())?,
-        password: password.as_str().try_into().map_err(|_| "saved password is too long".to_owned())?,
-        auth_method: if password.is_empty() { AuthMethod::None } else { AuthMethod::WPA2Personal },
+        password: secret.as_str().try_into().map_err(|_| "saved password is too long".to_owned())?,
+        auth_method: if secret.is_empty() { AuthMethod::None } else { AuthMethod::WPA2Personal },
         ..Default::default()
     }))
     .map_err(|err| err.to_string())?;
+    // DHCP sends it, so the unit is findable by name in the router's lease table.
+    let name = CString::new(hostname.as_str()).map_err(|_| "saved hostname has a NUL".to_owned())?;
+    unsafe { sys::esp_netif_set_hostname(wifi.sta_netif().handle(), name.as_ptr()) };
 
     let (changes, received) = mpsc::channel();
     let forward = changes.clone();
@@ -146,16 +210,4 @@ fn attempt(delay: Duration, wait: &mut Duration) {
         delay = *wait;
         *wait = (*wait * 2).min(LONGEST_RETRY);
     }
-}
-
-fn saved_credentials(nvs: &EspDefaultNvsPartition) -> Result<(String, String), String> {
-    let store = EspNvs::new(nvs.clone(), "wifi", false).map_err(|err| format!("no saved Wi-Fi: {err}"))?;
-    let mut buf = [0u8; 100];
-    let ssid = store
-        .get_str("ssid", &mut buf)
-        .map_err(|err| err.to_string())?
-        .ok_or("no saved SSID")?
-        .to_owned();
-    let password = store.get_str("passwd", &mut buf).map_err(|err| err.to_string())?.unwrap_or("").to_owned();
-    Ok((ssid, password))
 }

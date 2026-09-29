@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>thingino backpack</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 28rem; padding: 1rem; background: #111; color: #eee; }
+h1 { font-size: 1.3rem; margin: 0 0 .25rem; }
+#who { color: #999; margin: 0 0 1rem; font-size: .9rem; }
+label { display: block; margin: .75rem 0 .25rem; }
+input, select, button { box-sizing: border-box; width: 100%; font-size: 1rem; padding: .55rem; border-radius: .4rem; border: 1px solid #444; background: #1c1c1c; color: #eee; }
+.row { display: flex; gap: .5rem; }
+.row select { flex: 1; }
+.row button { width: auto; }
+button { cursor: pointer; }
+#save { margin-top: 1.25rem; background: #ff6a00; border-color: #ff6a00; color: #111; font-weight: 600; }
+#msg { margin-top: 1rem; }
+</style>
+</head>
+<body>
+<h1>thingino backpack</h1>
+<p id="who"></p>
+<form id="form">
+  <label for="nets">Networks this backpack can hear</label>
+  <div class="row">
+    <select id="nets"><option value="">Scanning...</option></select>
+    <button type="button" id="rescan">Rescan</button>
+  </div>
+  <label for="ssid">Network name</label>
+  <input id="ssid" name="wlan_ssid" required maxlength="32" autocomplete="off" autocapitalize="off">
+  <label for="pass">Passphrase</label>
+  <input id="pass" name="wlan_pass" type="password" maxlength="64" autocomplete="off">
+  <label for="host">Hostname</label>
+  <input id="host" name="hostname" maxlength="32" autocomplete="off" autocapitalize="off">
+  <button id="save">Save and restart</button>
+</form>
+<p id="msg"></p>
+<script>
+const $ = (id) => document.getElementById(id);
+const api = (action, options) => fetch('/x/api.cgi?action=' + action, options).then((r) => r.json());
+
+function show(networks) {
+  const best = new Map();
+  for (const n of networks || []) {
+    if (n.ssid && (!best.has(n.ssid) || best.get(n.ssid).signal < n.signal)) best.set(n.ssid, n);
+  }
+  const sorted = [...best.values()].sort((a, b) => b.signal - a.signal);
+  const nets = $('nets');
+  nets.textContent = '';
+  const pick = document.createElement('option');
+  pick.value = '';
+  pick.textContent = sorted.length ? 'Choose a network' : 'None heard: type the name below';
+  nets.append(pick);
+  for (const n of sorted) {
+    const o = document.createElement('option');
+    o.value = n.ssid;
+    o.textContent = n.ssid + ' (' + n.signal + ' dBm, ' + n.security + ')';
+    nets.append(o);
+  }
+}
+
+function poll() {
+  api('scan_status').then((r) => (r.scanning ? setTimeout(poll, 1000) : show(r.networks)));
+}
+
+$('nets').onchange = () => { if ($('nets').value) $('ssid').value = $('nets').value; };
+$('rescan').onclick = () => {
+  $('nets').innerHTML = '<option value="">Scanning...</option>';
+  api('scan_start').then(poll);
+};
+$('form').onsubmit = (event) => {
+  event.preventDefault();
+  $('msg').textContent = 'Saving...';
+  api('save', { method: 'POST', body: new URLSearchParams(new FormData($('form'))) })
+    .then((r) => {
+      $('msg').textContent = r.success
+        ? 'Saved. The backpack restarts and joins ' + $('ssid').value + '. Reconnect this device to your own network.'
+        : (r.error || 'Not saved.');
+    })
+    .catch(() => { $('msg').textContent = 'The backpack did not answer.'; });
+};
+
+api('get_info').then((i) => {
+  $('who').textContent = i.hostname + ', ' + i.build_id + ', ' + i.wlan_mac;
+  $('host').value = i.hostname;
+});
+api('scan_cached').then((r) => show(r.networks));
+</script>
+</body>
+</html>

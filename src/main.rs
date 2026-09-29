@@ -22,6 +22,7 @@ use tdfu_daemon::{listen, TokioClock, DEFAULT_PORT};
 
 use tdfu_usb::espidf::UsbHost;
 
+mod portal;
 mod wifi;
 
 /// Where the daemon would look for loaders. Deliberately empty: the client streams the
@@ -53,7 +54,11 @@ fn run() -> Result<(), String> {
     let peripherals = Peripherals::take().map_err(|err| err.to_string())?;
     let sysloop = EspSystemEventLoop::take().map_err(|err| err.to_string())?;
     let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
-    let _wifi = wifi::join(peripherals.modem, sysloop, nvs)?;
+    let Some(saved) = wifi::saved(&nvs)? else {
+        // Nothing to join: the portal is all this boot does, until it is given a network.
+        return portal::run(peripherals.modem, sysloop, nvs).map(|never| match never {});
+    };
+    let _wifi = wifi::join(peripherals.modem, sysloop, nvs, saved)?;
     let host = UsbHost::install().map_err(|err| err.to_string())?;
     memory_report("after Wi-Fi and USB host");
     std::thread::Builder::new()
