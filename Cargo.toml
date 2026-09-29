@@ -37,6 +37,9 @@ tdfu-core = { path = "../thingino-dfu-rs-espidf/crates/tdfu-core" }
 tdfu-usb = { path = "../thingino-dfu-rs-espidf/crates/tdfu-usb" }
 tdfu-daemon = { path = "../thingino-dfu-rs-espidf/crates/tdfu-daemon" }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "io-util", "macros"] }
+# The USB backend and the daemon log through tracing; with no subscriber installed, its
+# `log` feature hands their events to the ESP logger.
+tracing = { version = "0.1", default-features = false, features = ["std", "log"] }
 
 [build-dependencies]
 embuild = "0.33"

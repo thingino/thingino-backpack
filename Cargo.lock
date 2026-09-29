@@ -1478,8 +1478,10 @@ dependencies = [
 name = "tdfu-usb"
 version = "2.0.1"
 dependencies = [
+ "esp-idf-sys",
  "nusb",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
@@ -1507,6 +1509,7 @@ dependencies = [
  "tdfu-daemon",
  "tdfu-usb",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1662,6 +1665,7 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-core",
 ]

@@ -24,8 +24,8 @@ use tdfu_core::{AltSel, Progress};
 use tdfu_usb::{vid, ControlIn, ControlType, Discovered, LocalUsbBackend, LocalUsbTransport, Recipient};
 
 #[cfg(feature = "verify-uboot")]
-use thingino_backpack::usbhost::EspTransport;
-use thingino_backpack::usbhost::UsbHost;
+use tdfu_usb::espidf::EspTransport;
+use tdfu_usb::espidf::UsbHost;
 
 static STAGE1: &[u8] = include_bytes!("../../loaders/t31x/tpl.bin");
 static UBOOT: &[u8] = include_bytes!("../../loaders/t31x/uboot.bin");

@@ -20,7 +20,7 @@ use tdfu_daemon::serve::{serve, Signals};
 use tdfu_daemon::transport::{Origins, Timeouts};
 use tdfu_daemon::{listen, TokioClock, DEFAULT_PORT};
 
-use thingino_backpack::usbhost::UsbHost;
+use tdfu_usb::espidf::UsbHost;
 
 mod wifi;
 
