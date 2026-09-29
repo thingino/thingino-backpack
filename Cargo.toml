@@ -10,13 +10,6 @@ name = "backpack"
 path = "src/main.rs"
 harness = false
 
-# Detect, bootstrap and read a camera with no network; `--features verify-uboot` adds the
-# DDR readback of U-Boot before the jump.
-[[bin]]
-name = "standalone"
-path = "src/bin/standalone.rs"
-harness = false
-
 [profile.release]
 opt-level = "s"
 debug = true
@@ -25,15 +18,9 @@ debug = true
 debug = true
 opt-level = "z"
 
-[features]
-# Read U-Boot back out of DDR through the bootrom before the jump (adds ~10 s).
-verify-uboot = []
-
 [dependencies]
 log = "0.4"
 esp-idf-svc = "0.53"
-sha2 = "0.10"
-tdfu-core = { git = "https://github.com/thingino/thingino-dfu-rs", tag = "v2.1.0" }
 tdfu-usb = { git = "https://github.com/thingino/thingino-dfu-rs", tag = "v2.1.0" }
 tdfu-daemon = { git = "https://github.com/thingino/thingino-dfu-rs", tag = "v2.1.0" }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "io-util", "macros"] }
