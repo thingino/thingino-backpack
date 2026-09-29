@@ -7,6 +7,7 @@
 use core::sync::atomic::{AtomicPtr, Ordering};
 use core::time::Duration;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::Arc;
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::peripherals::Peripherals;
@@ -22,8 +23,10 @@ use tdfu_daemon::{listen, TokioClock, DEFAULT_PORT};
 
 use tdfu_usb::espidf::UsbHost;
 
+mod camera;
 mod console;
 mod portal;
+mod rfc2217;
 mod status;
 mod wifi;
 
@@ -68,10 +71,11 @@ fn run() -> Result<(), String> {
     };
     let hostname = saved.hostname.clone();
     let wifi = wifi::join(peripherals.modem, sysloop, nvs, saved)?;
-    // Findable as a camera is: the app's hub lists it and opens the page on port 80.
-    let status = status::start(&hostname)?;
-    console::start(peripherals.uart1, peripherals.pins.gpio17, peripherals.pins.gpio18)?;
     let host = UsbHost::install().map_err(|err| err.to_string())?;
+    let camera = camera::start(peripherals.pins.gpio15, peripherals.pins.gpio16, host.clone())?;
+    console::start(peripherals.uart1, peripherals.pins.gpio17, peripherals.pins.gpio18, Arc::clone(&camera))?;
+    // Findable as a camera is: the app's hub lists it and opens the page on port 80.
+    let status = status::start(&hostname, camera)?;
     memory_report("after Wi-Fi and USB host");
 
     // The daemon's operations are deep async state machines, and a transfer blocks the
@@ -99,7 +103,7 @@ fn daemon(host: UsbHost) {
                 tokio::time::sleep(REPORT_EVERY).await;
                 memory_report("periodic");
                 reports = reports.wrapping_add(1);
-                if reports % STACKS_EVERY == 0 {
+                if reports.is_multiple_of(STACKS_EVERY) {
                     stacks_report();
                 }
             }
