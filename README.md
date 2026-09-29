@@ -239,8 +239,9 @@ type into its console, and cut its power. Keep it on a network you trust.
 ## Troubleshooting
 
 - **Brownouts at Wi-Fi start-up** (`BOD` in the log, reset loops): the radio's calibration
-  is the current peak. The TX power is capped at 13 dBm; a camera and the ESP32 on one weak
-  USB port need a powered hub.
+  is the current peak. After a brownout reset the radio comes up at 13 dBm instead of 20,
+  until a reset for any other reason; a camera and the ESP32 on one weak USB port need a
+  powered hub.
 - **RFC 2217 or the raw console stalls over IPv4 while IPv6 works**: some access points'
   hardware receive offload turns the Ethernet padding of tiny frames (1 to 5 bytes of TCP
   payload, as keystrokes are) into payload, and the connection desyncs. OpenWrt's airoha

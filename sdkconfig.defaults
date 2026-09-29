@@ -22,10 +22,10 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_LWIP_IPV6_AUTOCONFIG=y
 CONFIG_LWIP_MAX_SOCKETS=16
 
-# Dev boards on marginal USB power brown out at Wi-Fi PHY calibration, the radio's largest
-# current spike. Cap TX power, and let the PHY back off further after a brownout reset.
+# Wi-Fi transmits at ESP-IDF's maximum, 20 dBm. Boards on marginal USB power brown out at
+# Wi-Fi PHY calibration, the radio's largest current spike: after a brownout reset the PHY
+# comes up at 13 dBm instead, until a reset for any other reason.
 CONFIG_ESP_PHY_REDUCE_TX_POWER=y
-CONFIG_ESP_PHY_MAX_WIFI_TX_POWER=13
 
 # mDNS (the thingino app's `_thingino._tcp`) announces on the station alone: one
 # interface and one service, instead of room for the AP, Ethernet and ten services.
