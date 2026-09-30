@@ -187,10 +187,7 @@ pub fn start(power: impl OutputPin + 'static, boot: impl OutputPin + 'static, ho
         recoveries: AtomicU32::new(0),
     });
     let supervisor = Arc::clone(&camera);
-    thread::Builder::new()
-        .name("camera".into())
-        .stack_size(4096)
-        .spawn(move || supervise(&supervisor, &received))
+    crate::spawn_named(c"camera", 4096, move || supervise(&supervisor, &received))
         .map_err(|err| format!("camera: {err}"))?;
     Ok(camera)
 }

@@ -159,11 +159,7 @@ pub fn join(
         .map_err(|err| err.to_string())?;
 
     let netif = wifi.sta_netif().handle() as usize;
-    thread::Builder::new()
-        .name("wifi".into())
-        .stack_size(4096)
-        .spawn(move || stay_joined(&ssid, netif, received))
-        .map_err(|err| err.to_string())?;
+    crate::spawn_named(c"rejoin", 4096, move || stay_joined(&ssid, netif, received))?;
     wifi.start().map_err(|err| err.to_string())?;
     // Every DFU block is a request/response pair; modem sleep adds 100 ms stalls to each.
     unsafe { sys::esp_wifi_set_ps(sys::wifi_ps_type_t_WIFI_PS_NONE) };

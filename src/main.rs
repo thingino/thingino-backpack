@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::io::vfs::MountedEventfs;
 #[cfg(not(esp32p4))]
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -209,6 +210,27 @@ fn stacks_report() {
         line.push_str(&format!(" {name} {}", task.usStackHighWaterMark));
     }
     info!("stacks unused:{line}");
+}
+
+/// Spawns a thread whose FreeRTOS task is called `name`, as the stack report prints it: a
+/// Rust thread's own name never reaches FreeRTOS.
+fn spawn_named(
+    name: &'static core::ffi::CStr,
+    stack: usize,
+    body: impl FnOnce() + Send + 'static,
+) -> Result<(), String> {
+    ThreadSpawnConfiguration {
+        name: Some(name),
+        ..Default::default()
+    }
+    .set()
+    .map_err(|err| err.to_string())?;
+    let spawned = std::thread::Builder::new()
+        .name(name.to_string_lossy().into_owned())
+        .stack_size(stack)
+        .spawn(body);
+    ThreadSpawnConfiguration::default().set().map_err(|err| err.to_string())?;
+    spawned.map(drop).map_err(|err| err.to_string())
 }
 
 /// There is nothing to interrupt the daemon on the unit; power is the off switch.
