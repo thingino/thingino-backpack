@@ -35,32 +35,39 @@ images stream through it, so the default build runs without PSRAM.
   ESP-IDF's P4 default pins, which are those of Espressif's P4 Function EV board
   (`src/eth.rs`). Addresses come by DHCPv4 and SLAAC, there is no setup portal, and the
   hostname is `thingino-backpack-xxxx` from the Ethernet MAC. The camera's USB goes to the
-  high-speed port. The camera's power, boot pin and UART pins (GPIO20 to 23 in
-  `src/main.rs`) are placeholders until a board is chosen. ESP-IDF 5.5 builds for P4 silicon
-  3.1 and later; `sdkconfig.esp32p4` says what earlier chips need.
+  high-speed port. The camera's power, boot pin and UART are on GPIO20 to 23, picked
+  without a particular board in mind. ESP-IDF 5.5 builds for P4 silicon 3.1 and later;
+  `sdkconfig.esp32p4` says what earlier chips need.
 
 ## Wiring
 
-| ESP32-S3, -S2   | Camera                                                                    |
-|-----------------|---------------------------------------------------------------------------|
-| GPIO15          | Power switch (a MOSFET module or similar): high = camera on               |
-| GPIO16          | Flash DI, pin 5 of an SOIC-8 NOR flash (open-drain: low = boot from USB)  |
-| GPIO17 (TX)     | UART RX                                                                   |
-| GPIO18 (RX)     | UART TX                                                                   |
-| GPIO19, GPIO20  | USB D-, D+ (the OTG port)                                                 |
-| GND             | GND                                                                       |
+| ESP32-S3, -S2   | ESP32-P4                  | Camera                                                                   |
+|-----------------|---------------------------|--------------------------------------------------------------------------|
+| GPIO15          | GPIO20                    | Power switch (a MOSFET module or similar): high = camera on              |
+| GPIO16          | GPIO21                    | Flash DI, pin 5 of an SOIC-8 NOR flash (open-drain: low = boot from USB) |
+| GPIO17 (TX)     | GPIO22 (TX)               | UART RX                                                                  |
+| GPIO18 (RX)     | GPIO23 (RX)               | UART TX                                                                  |
+| GPIO19, GPIO20  | the high-speed port's own | USB D-, D+                                                               |
+| GND             | GND                       | GND                                                                      |
 
-- The UART is 3.3 V on both sides. GPIO17 only drives the camera's RX while the camera has
-  power: a driven RX back-powers an unpowered SoC, and some then fail to cold boot.
-- GPIO16 only ever pulls low or lets go, so it never feeds an unpowered camera. Pulled low
-  through a power-on, it keeps the bootrom from reading the SPL, and the bootrom falls back
-  to USB boot. Its level is set before it becomes an output, so it cannot glitch the flash
-  of a running camera when the ESP32 boots.
+- The S2 and S3 share every pin, and GPIO19 and GPIO20 are the only pins their USB PHY
+  reaches. The P4's high-speed port has D- and D+ pins of its own, which are not GPIOs.
+  The P4's power, boot and UART pins were picked without a particular board in mind: move
+  them in `src/main.rs` if the board needs those GPIOs, and keep off its strapping pins,
+  GPIO34 to 38.
+- The UART is 3.3 V on both sides. The ESP32's TX only drives the camera's RX while the
+  camera has power: a driven RX back-powers an unpowered SoC, and some then fail to cold
+  boot.
+- The boot pin only ever pulls low or lets go, so it never feeds an unpowered camera.
+  Pulled low through a power-on, it keeps the bootrom from reading the SPL, and the bootrom
+  falls back to USB boot. Its level is set before it becomes an output, so it cannot glitch
+  the flash of a running camera when the ESP32 boots.
 - The power switch should switch the supply's + side. The camera's ground also reaches the
   ESP32 through the USB cable and the UART ground, so a switch on the ground side can be
   bypassed.
-- The ESP32's own log is on UART0 (GPIO43 TX, GPIO44 RX), 115200 8N1, which is the port
-  most boards bring out through their USB-UART bridge. The OTG port belongs to the camera.
+- The ESP32's own log is on UART0 at 115200 8N1: GPIO43 TX and GPIO44 RX on the S2 and S3,
+  GPIO37 TX and GPIO38 RX on the P4. Most boards bring it out through their USB-UART
+  bridge. The camera's USB port is never a console.
 - The pins are set in `src/main.rs`, per chip; the status page lists the ones in use.
 
 ## Flashing a release
