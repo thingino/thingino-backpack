@@ -92,7 +92,7 @@ Requirements:
 - ESP-IDF v5.5.5, at `~/esp/esp-idf-v5.5.5` by default (`env.sh` sets `IDF_PATH`).
 
 Cargo fetches the daemon, the DFU core and the ESP-IDF USB host backend from
-[thingino-dfu-rs](https://github.com/thingino/thingino-dfu-rs) at its v2.1.0 release.
+[thingino-dfu-rs](https://github.com/thingino/thingino-dfu-rs) at its v2.1.1 release.
 
 ```sh
 ./image.sh          # ESP32-S3, images/: bootloader.bin, partition-table.bin, app.bin, full.bin
@@ -228,7 +228,7 @@ leaves a camera alone while its power is meant to be off or a bootrom entry is r
 The default build runs without PSRAM, which is what the stack sizes and the streaming are
 shaped for. The log prints the internal heap every 10 s (free, lowest ever, largest block)
 and every task's unused stack every minute. On a T31X with a console client attached, the
-lowest free heap is about 65 KB, reached during a bootstrap, and about 120 KB during reads
+lowest free heap is about 100 KB, reached during a bootstrap, and about 120 KB during reads
 and writes.
 
 ## Security
