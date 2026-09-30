@@ -253,3 +253,8 @@ type into its console, and cut its power. Keep it on a network you trust.
   hardware receive offload turns the Ethernet padding of tiny frames (1 to 5 bytes of TCP
   payload, as keystrokes are) into payload, and the connection desyncs. OpenWrt's airoha
   hardware GRO does this; turning it off (`ethtool -K <if> rx-gro-hw off`) fixes it.
+
+## License
+
+GPL-2.0-or-later, the same as thingino-dfu-rs, which the firmware is built on. See
+[`LICENSE`](LICENSE).
