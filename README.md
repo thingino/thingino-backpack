@@ -178,14 +178,14 @@ and restarts into the setup portal. Erasing the NVS partition (`esptool.py erase
 
 ## Using it
 
-| Port      | Service                                                       |
-|-----------|---------------------------------------------------------------|
-| 80        | Status page, `/api/camera`, `/api/wifi` and `/api/ota`        |
-| 2217      | Camera console, RFC 2217                                      |
-| 3000      | Camera console, raw                                           |
-| 5050      | thingino-dfu daemon (`dfu-remote`)                            |
-| 8888      | Flash programmer, flashrom's serprog (IPv4 only, for now)     |
-| 5353/udp  | mDNS: the hostname, and `_thingino._tcp` for the thingino app |
+| Port     | Service                                                           |
+|----------|-------------------------------------------------------------------|
+| 80       | Status page, `/api/camera`, `/api/flash`, `/api/wifi`, `/api/ota` |
+| 2217     | Camera console, RFC 2217                                          |
+| 3000     | Camera console, raw                                               |
+| 5050     | thingino-dfu daemon (`dfu-remote`)                                |
+| 8888     | Flash programmer, flashrom's serprog (IPv4 only, for now)         |
+| 5353/udp | mDNS: the hostname, and `_thingino._tcp` for the thingino app     |
 
 `<host>` below is the hostname, as `<host>.local`, or an address.
 
@@ -261,9 +261,10 @@ transfer has gone unanswered, the power cycles done for recovery, and BOOTSEL's 
 
 ### Flash chip
 
-With the camera off, the unit speaks flashrom's serprog protocol on port 8888 and drives a
-SOIC-8 clip on the camera's flash chip, so flashrom 1.4.0 or later on any computer that
-reaches the unit reads and writes the chip over the network.
+The unit speaks flashrom's serprog protocol on port 8888 and drives a SOIC-8 clip on the
+camera's flash chip, so flashrom 1.4.0 or later on any computer that reaches the unit reads
+and writes the chip over the network. The camera is either off, with the unit powering the
+chip, or parked in its bootrom on its own supply: see [VCC and HOLD](#vcc-and-hold).
 
 | ESP32-S3, -S2        | ESP32-P4             | Flash chip                                          |
 |----------------------|----------------------|-----------------------------------------------------|
@@ -280,11 +281,12 @@ reaches the unit reads and writes the chip over the network.
   unit's 3.3 V on the chip's ground pin, a short: the unit drops off Wi-Fi and browns out.
 - 3.3 V chips only. A 1.8 V chip (W25Q...W, GD25LQ, MX25U, XM25QU) needs a level shifter
   and a 1.8 V supply.
-- VCC and HOLD are only driven while flashrom has the pins enabled: VCC powers the chip
-  first, then HOLD goes high so that nothing can pause the chip; afterwards both are let
-  go. That suits a backpack soldered to the camera's flash for good. On the camera's board,
-  VCC is its 3.3 V rail and HOLD one of the SoC's quad data lines, so outside a session
-  they are the camera's, and it boots as if the backpack were not there.
+- VCC and HOLD, when set to be driven, are only driven while flashrom has the pins
+  enabled: VCC powers the chip first, then HOLD goes high so that nothing can pause the
+  chip; afterwards both are let go. That suits a backpack soldered to the camera's flash
+  for good. On the camera's board, VCC is its 3.3 V rail and HOLD one of the SoC's quad
+  data lines, so outside a session they are the camera's, and it boots as if the backpack
+  were not there.
 - WP stays unconnected: a chip heeds it only to keep its status register locked, and only
   with quad mode off, so reading, writing and erasing work without it. A chip locked that
   way (SRWD set, quad mode off) needs WP tied to VCC before flashrom can clear its block
@@ -301,25 +303,52 @@ reaches the unit reads and writes the chip over the network.
   a backpack soldered to a camera's flash wants a board without a bridge there. The S2
   Mini has no GPIO44; on the S2, HOLD is GPIO40, an edge pin there.
 
+#### VCC and HOLD
+
+Each is a setting, driven (the default) or left alone, on the status page or with `curl -X
+POST 'http://<host>.local/api/flash?vcc=alone&hold=alone'`; `GET /api/flash` reports them.
+They apply from the next flashrom run on, and are saved across restarts.
+
+- VCC driven: the unit powers the chip through pin 8, and the camera has to be off. This
+  suits a bare chip, and boards whose 3.3 V rail feeds little besides the flash.
+- VCC left alone: the chip runs on the camera's own supply. This is for boards where the
+  flash shares the SoC's 3.3 V rail, as on Ingenic cameras: powering that rail through the
+  clip boots the SoC, its bootrom takes over the flash's pins, and reads come back as 0xFF
+  or 0x00 after the first few milliseconds. Each flashrom run parks the camera first
+  instead: its power cut for a second, then back on with the boot pin (and BOOTSEL) held for
+  two, so the bootrom finds no SPL and leaves the flash alone. Where the SoC drives DI
+  harder than the boot pin pulls it, as on a T23 board, only BOOTSEL parks it: wire the
+  board's boot select there. The camera stays on, its power actions refused, until flashrom
+  is done, and then goes off. Parking needs the unit's power switch to cut the camera's
+  supply: a camera still on the USB bus, or still driving its UART TX, after the cut is
+  refused, the boot pin untouched. A camera powered from elsewhere is parked by hand: hold
+  the boot pin, power the camera on, then run flashrom, which takes the held pin for the
+  camera parked and lets it go.
+- HOLD driven: high through the session, so nothing pauses the chip. A chip with quad mode
+  off needs it, on a board that leaves HOLD floating.
+- HOLD left alone: for chips in quad mode, which take HOLD for a data line and ignore it,
+  and boards that pull it up. On DevKitC-style boards, the USB-UART bridge drives GPIO44
+  whatever the setting, so unplug HOLD there for a board the bridge should not feed.
+
 Then run flashrom from any computer that reaches the unit. Until flashrom's serprog client
 gains IPv6 (1.8.0 has none), this is IPv4 only, though the unit listens on IPv6 too: where
 `<host>.local` does not resolve to an IPv4 address, give it the one the status page lists.
 
 ```sh
-curl -X POST 'http://<host>.local/api/camera?action=power-off'   # or Power off on the page
+curl -X POST 'http://<host>.local/api/camera?action=power-off'   # when VCC is driven
 flashrom -p serprog:ip=<host>.local:8888                         # probe: names the chip
 flashrom -p serprog:ip=<host>.local:8888 -r dump.bin
 flashrom -p serprog:ip=<host>.local:8888 -r check.bin && cmp dump.bin check.bin
 flashrom -p serprog:ip=<host>.local:8888 -w image.bin            # erases, writes, verifies
 ```
 
-- The camera has to be off: its power off, nothing on its USB port, and its UART TX low,
-  as an unpowered camera leaves it. The unit starts with the camera on, so after it
-  restarts, switch the camera off again. `Error: could not enable output buffers` is the
-  unit refusing to drive the clip for one of those reasons.
+- With VCC driven, the camera has to be off: its power off, nothing on its USB port, and
+  its UART TX low, as an unpowered camera leaves it. The unit starts with the camera on, so
+  after it restarts, switch the camera off again. `Error: could not enable output buffers`
+  is the unit refusing to drive the clip for one of those reasons.
 - The unit drives the clip only while flashrom has the pins enabled. Until flashrom is
-  done, every camera action but `power-off` is refused; a client that leaves, or one quiet
-  for 30 s, gets the pins back to high-Z.
+  done, every camera action but `power-off` is refused, and that one too while the camera
+  is parked; a client that leaves, or one quiet for 30 s, gets the pins back to high-Z.
 - When several chip definitions match, flashrom asks for one: add `-c` with the name that
   matches the chip's marking, as `-c "MX25L12835F/MX25L12873F"`.
 - Two reads that match are the check that the clip grips every leg; a write verifies

@@ -15,8 +15,11 @@
 //! needs the flash), and recovery, which power-cycles a camera that stopped serving USB
 //! without leaving the bus or that the port cannot get enumerated.
 //!
-//! The flash programmer borrows the flash chip, and with it the boot pin as its MOSI, only
-//! from a camera that is off; until it gives them back the camera stays off.
+//! The flash programmer borrows the flash chip, and with it the boot pin as its MOSI. With
+//! the chip on the programmer's VCC, only from a camera that is off, and it stays off until
+//! they are back. With the chip on the camera's own supply, it parks the camera first: a
+//! power cycle with the boot pin held, so the bootrom finds no SPL and leaves the flash's
+//! pins alone; the camera stays on in its bootrom until they are back, then goes off.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
@@ -40,6 +43,8 @@ const OFF_FOR: Duration = Duration::from_secs(1);
 const TX_AFTER: Duration = Duration::from_millis(300);
 /// The bootrom enumerates about two seconds after power-on.
 const BOOTROM_WITHIN: Duration = Duration::from_secs(10);
+/// A bootrom that cannot read the flash gives up on it well within this.
+const PARK_FOR: Duration = Duration::from_secs(2);
 /// No bootrom enumerates this soon after power-on, so a device on the bus by then is one
 /// that never lost power.
 const NEVER_LEFT: Duration = Duration::from_millis(300);
@@ -112,6 +117,9 @@ struct State {
     lines_boot: bool,
     /// The flash programmer has the flash chip and the boot pin.
     flash_lent: bool,
+    /// And the chip is on the camera's own supply: the camera stays on, parked in its
+    /// bootrom, until the chip is back.
+    parked: bool,
     /// BOOTSEL is driven high to boot from USB, rather than pulled low.
     bootsel_high: bool,
 }
@@ -184,8 +192,8 @@ pub struct Status {
     pub bootsel_high: bool,
 }
 
-/// The flash chip, lent to the flash programmer: the camera stays off, and the boot pin is
-/// the programmer's, until this is dropped.
+/// The flash chip, lent to the flash programmer: the camera's power stays as it is, and the
+/// boot pin is the programmer's, until this is dropped.
 pub struct FlashLease<'a> {
     camera: &'a Camera,
 }
@@ -258,6 +266,7 @@ pub fn start(
             lines_off: false,
             lines_boot: false,
             flash_lent: false,
+            parked: false,
             bootsel_high,
         }),
         host,
@@ -328,38 +337,84 @@ impl Camera {
         Ok(format!("BOOTSEL {}", bootsel_name(high)))
     }
 
-    /// Lends the flash chip to the flash programmer, if the camera is off: its power
-    /// switch off, nothing of it on the USB bus, and its UART TX not held high, which an idle
-    /// UART does whenever the camera has power. The last two catch a switch that is not
-    /// cutting the supply.
-    pub fn lend_flash(&self) -> Result<FlashLease<'_>, String> {
+    /// Lends the flash chip to the flash programmer. With the chip on the programmer's VCC,
+    /// only if the camera is off: its power switch off, nothing of it on the USB bus, and its
+    /// UART TX not held high, which an idle UART does whenever the camera has power. The last
+    /// two catch a switch that is not cutting the supply. With the chip on the camera's own
+    /// supply (`park`), after parking the camera in its bootrom.
+    pub fn lend_flash(&self, park: bool) -> Result<FlashLease<'_>, String> {
         {
             let mut state = self.state();
             if state.flash_lent {
                 return Err("the flash chip is already lent".into());
             }
-            if state.powered {
+            if !park && state.powered {
                 return Err("the camera is on; switch it off first".into());
             }
-            if state.boot_held || state.boot_watch.is_some() {
+            if (!park && state.boot_held) || state.boot_watch.is_some() {
                 return Err("the boot pin is held".into());
             }
-            // From here the camera refuses power, so it cannot come on during the checks.
+            // From here the camera refuses power changes, so nothing undoes the checks.
             state.flash_lent = true;
+            state.parked = park;
         }
-        let checked = if !self.host.enumerated().is_empty() {
-            Err("the camera is on the USB bus, so it still has power")
+        let checked = if park {
+            self.park()
+        } else if !self.host.enumerated().is_empty() {
+            Err("the camera is on the USB bus, so it still has power".into())
         } else if console::camera_tx_high() {
-            Err("the camera's UART TX is high, so it still has power")
+            Err("the camera's UART TX is high, so it still has power".into())
         } else {
             Ok(())
         };
         if let Err(why) = checked {
-            self.state().flash_lent = false;
-            return Err(why.into());
+            let mut state = self.state();
+            state.flash_lent = false;
+            state.parked = false;
+            return Err(why);
         }
-        info!("camera: flash chip lent to the flash programmer");
+        info!(
+            "camera: flash chip lent to the flash programmer{}",
+            if park { ", the camera parked in its bootrom" } else { "" }
+        );
         Ok(FlashLease { camera: self })
+    }
+
+    /// Parks the camera in its bootrom: its power cut, then back on with the boot pin held, so
+    /// the bootrom finds no SPL and gives up on the flash, leaving its pins alone; then the pin
+    /// goes. A boot pin already held means the camera was powered on with it by hand, which
+    /// parked it the same way.
+    fn park(&self) -> Result<(), String> {
+        {
+            let mut state = self.state();
+            if state.boot_held {
+                state.boot(&self.pins, false);
+                return Ok(());
+            }
+            state.power(&self.pins, false);
+        }
+        thread::sleep(OFF_FOR);
+        // A camera still on the USB bus, or still driving its UART TX, never lost power and is
+        // still using the flash; the boot pin stays out of it.
+        if !self.host.enumerated().is_empty() || console::camera_tx_high() {
+            self.state().power(&self.pins, true);
+            return Err("the camera kept its power through the power cut, so the power switch is not cutting \
+                        its supply; park it by hand: hold the boot pin, power the camera on, then run flashrom"
+                .into());
+        }
+        {
+            let mut state = self.state();
+            state.boot(&self.pins, true);
+            state.power(&self.pins, true);
+        }
+        thread::sleep(PARK_FOR);
+        let mut state = self.state();
+        let outcome = state.boot_outcome.take();
+        state.boot(&self.pins, false);
+        match outcome {
+            Some(Err(why)) => Err(why),
+            _ => Ok(()),
+        }
     }
 
     fn return_flash(&self) {
@@ -371,6 +426,11 @@ impl Camera {
         // SAFETY: the pin is configured just above.
         unsafe { sys::gpio_set_drive_capability(self.pins.boot, sys::gpio_drive_cap_t_GPIO_DRIVE_CAP_3) };
         state.flash_lent = false;
+        if state.parked {
+            state.parked = false;
+            // In its bootrom the camera has nothing to do; it boots again when switched on.
+            state.power(&self.pins, false);
+        }
         info!("camera: flash chip back from the flash programmer");
     }
 
@@ -398,9 +458,18 @@ impl Camera {
     }
 
     fn act(&self, action: Action) -> Result<String, String> {
-        if action != Action::PowerOff && self.state().flash_lent {
-            return Err("the flash chip is lent to the flash programmer, and the camera stays off until flashrom is done"
-                .into());
+        {
+            let state = self.state();
+            if state.parked {
+                return Err("the flash chip is lent to the flash programmer on the camera's own supply, and the \
+                            camera stays on until flashrom is done"
+                    .into());
+            }
+            if action != Action::PowerOff && state.flash_lent {
+                return Err("the flash chip is lent to the flash programmer, and the camera stays off until \
+                            flashrom is done"
+                    .into());
+            }
         }
         match action {
             Action::PowerOn => {
@@ -573,9 +642,10 @@ impl Recovery {
             self.cooldown = FIRST_COOLDOWN;
         }
         {
-            // Power that is meant to be off stays off, and a bootrom entry is not cut short.
+            // Power that is meant to be off stays off, a bootrom entry is not cut short, and a
+            // camera parked for the flash programmer stays parked.
             let state = camera.state();
-            if !state.powered || state.boot_watch.is_some() {
+            if !state.powered || state.boot_watch.is_some() || state.parked {
                 return;
             }
         }

@@ -1,5 +1,6 @@
 //! A flash chip programmer for flashrom: its serprog protocol on [`PORT`], driving the
-//! camera's SPI NOR flash through a SOIC-8 clip while the camera is off.
+//! camera's SPI NOR flash through a SOIC-8 clip while the camera is off, or parked in its
+//! bootrom.
 //!
 //! flashrom does the chip handling (probing, erasing, writing, verifying), each step one SPI
 //! operation and one network round trip:
@@ -9,20 +10,27 @@
 //! ```
 //!
 //! The clip is driven only while flashrom has its pins enabled (`S_PIN_STATE`), and only
-//! once the camera module has lent the flash chip: the camera off and staying off, and the
-//! boot pin, already on the flash's DI, handed over as MOSI. Enabling powers the chip's VCC,
-//! then drives its HOLD high so that nothing can pause it, then the bus; disabling, a client
-//! that leaves, or one quiet for [`IDLE_LIMIT`] puts every pin back to high-Z. WP stays
-//! unconnected: a chip heeds it only to keep its status register locked, and only with quad
-//! mode off. On a camera's board, VCC is its 3.3 V rail and HOLD one of the SoC's quad data
-//! lines, so a backpack soldered to the flash leaves them to the camera outside a session,
-//! and the camera boots as if it were not there. A clip on a bare chip can take its VCC from
-//! the unit's 3.3 V, with HOLD tied to it, instead.
+//! once the camera module has lent the flash chip, the boot pin, already on the flash's DI,
+//! handed over as MOSI. Enabling powers the chip's VCC, then drives its HOLD high so that
+//! nothing can pause it, then the bus; disabling, a client that leaves, or one quiet for
+//! [`IDLE_LIMIT`] puts every pin back to high-Z. WP stays unconnected: a chip heeds it only to
+//! keep its status register locked, and only with quad mode off. On a camera's board, VCC is
+//! its 3.3 V rail and HOLD one of the SoC's quad data lines, so a backpack soldered to the
+//! flash leaves them to the camera outside a session, and the camera boots as if it were not
+//! there. A clip on a bare chip can take its VCC from the unit's 3.3 V, with HOLD tied to it,
+//! instead.
+//!
+//! VCC and HOLD are settings, each driven or left alone, saved in NVS. Driven, VCC needs the
+//! camera off and staying off. Left alone, the chip runs on the camera's own supply: for
+//! boards where that rail also runs the SoC, whose bootrom would take the flash's pins as soon
+//! as the clip powered it, the camera is parked in its bootrom for the session instead. HOLD
+//! left alone suits chips in quad mode, which ignore it, and boards that pull it up.
 //!
 //! The protocol is flashrom's own specification (serprog-protocol.rst), version 1, with the
 //! commands flashrom uses on an SPI-only programmer.
 
 use core::ptr;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::io::{self, Read, Write};
 use std::net::{Ipv6Addr, TcpListener, TcpStream};
@@ -31,6 +39,7 @@ use std::thread;
 use std::time::Instant;
 
 use esp_idf_svc::hal::gpio::{InputPin, OutputPin};
+use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 use esp_idf_svc::sys::{self, esp, EspError};
 use log::{info, warn};
 
@@ -100,6 +109,11 @@ const READY_WITHIN: Duration = Duration::from_millis(500);
 /// JEDEC Read Identification, which every flash this is for answers once it is up.
 const RDID: u8 = 0x9F;
 
+/// Where the settings are kept: 0 for left alone, anything else, or nothing, for driven.
+const NAMESPACE: &str = "flash";
+const VCC_DRIVEN: &str = "vcc_driven";
+const HOLD_DRIVEN: &str = "hold_driven";
+
 /// flashrom talks the whole time it runs; a client quiet this long is gone.
 const IDLE_LIMIT: Duration = Duration::from_secs(30);
 
@@ -119,10 +133,53 @@ pub struct Pins {
 }
 
 static PINS: OnceLock<Pins> = OnceLock::new();
+static NVS: OnceLock<EspDefaultNvsPartition> = OnceLock::new();
+static DRIVE_VCC: AtomicBool = AtomicBool::new(true);
+static DRIVE_HOLD: AtomicBool = AtomicBool::new(true);
 
 /// The clip's GPIOs, once the programmer is started.
 pub fn pins() -> Option<Pins> {
     PINS.get().copied()
+}
+
+/// Which of the chip's VCC and HOLD a session drives; the others it leaves alone.
+#[derive(Clone, Copy)]
+pub struct Driven {
+    pub vcc: bool,
+    pub hold: bool,
+}
+
+impl Driven {
+    pub fn describe(self) -> String {
+        format!(
+            "VCC {}, HOLD {}",
+            if self.vcc { "driven" } else { "left to the camera, parked in its bootrom for each session" },
+            if self.hold { "driven high" } else { "left alone" }
+        )
+    }
+}
+
+pub fn driven() -> Driven {
+    Driven {
+        vcc: DRIVE_VCC.load(Ordering::Relaxed),
+        hold: DRIVE_HOLD.load(Ordering::Relaxed),
+    }
+}
+
+/// Sets whether sessions drive VCC and HOLD, each that is given, now and on every boot after;
+/// a session already running keeps what it started with. Answers what to tell the user.
+pub fn set_driven(vcc: Option<bool>, hold: Option<bool>) -> Result<String, String> {
+    let nvs = NVS.get().ok_or("the flash programmer is not running")?;
+    let store = EspNvs::new(nvs.clone(), NAMESPACE, true).map_err(|err| format!("opening NVS: {err}"))?;
+    for (value, key, flag) in [(vcc, VCC_DRIVEN, &DRIVE_VCC), (hold, HOLD_DRIVEN, &DRIVE_HOLD)] {
+        if let Some(value) = value {
+            store.set_u8(key, u8::from(value)).map_err(|err| err.to_string())?;
+            flag.store(value, Ordering::Relaxed);
+        }
+    }
+    let now = driven().describe();
+    info!("serprog: {now}");
+    Ok(now)
 }
 
 /// Takes the clip's pins, leaves them high-Z, and serves flashrom on [`PORT`].
@@ -133,6 +190,7 @@ pub fn start(
     vcc: impl OutputPin + 'static,
     hold: impl OutputPin + 'static,
     camera: Arc<Camera>,
+    nvs: EspDefaultNvsPartition,
 ) -> Result<(), String> {
     let pins = Pins {
         cs: i32::from(cs.pin()),
@@ -146,11 +204,30 @@ pub fn start(
     for pin in [pins.cs, pins.clk, pins.miso, pins.vcc, pins.hold] {
         release(pin).map_err(failed)?;
     }
+    // Starting matters more than the settings.
+    match EspNvs::new(nvs.clone(), NAMESPACE, true) {
+        Ok(store) => {
+            for (key, flag) in [(VCC_DRIVEN, &DRIVE_VCC), (HOLD_DRIVEN, &DRIVE_HOLD)] {
+                match store.get_u8(key) {
+                    Ok(saved) => flag.store(saved != Some(0), Ordering::Relaxed),
+                    Err(err) => warn!("serprog: reading {key}: {err}"),
+                }
+            }
+        }
+        Err(err) => warn!("serprog: reading the settings: {err}"),
+    }
     let listener = TcpListener::bind((Ipv6Addr::UNSPECIFIED, PORT)).map_err(|err| format!("flash programmer: {err}"))?;
     let _ = PINS.set(pins);
+    let _ = NVS.set(nvs);
     info!(
-        "serprog: flashrom on port {PORT}; clip CS GPIO{}, CLK GPIO{}, MISO GPIO{}, MOSI GPIO{}, VCC GPIO{}, HOLD GPIO{}",
-        pins.cs, pins.clk, pins.miso, pins.mosi, pins.vcc, pins.hold
+        "serprog: flashrom on port {PORT}; clip CS GPIO{}, CLK GPIO{}, MISO GPIO{}, MOSI GPIO{}, VCC GPIO{}, HOLD GPIO{}; {}",
+        pins.cs,
+        pins.clk,
+        pins.miso,
+        pins.mosi,
+        pins.vcc,
+        pins.hold,
+        driven().describe()
     );
     crate::spawn_named(c"serprog", STACK, move || serve(&listener, &pins, &camera))
         .map_err(|err| format!("flash programmer: {err}"))
@@ -276,7 +353,7 @@ impl Session<'_> {
         if self.bus.is_none() {
             match Bus::enable(self.pins, self.camera, self.hz) {
                 Ok(bus) => {
-                    info!("serprog: clip powered and driven at {} kHz", self.hz / 1000);
+                    info!("serprog: clip driven at {} kHz; {}", self.hz / 1000, bus.driven.describe());
                     self.bus = Some(bus);
                 }
                 Err(why) => {
@@ -358,18 +435,21 @@ struct Bus<'a> {
     device: sys::spi_device_handle_t,
     tx: Dma,
     rx: Dma,
+    driven: Driven,
     /// Last, so the camera takes the boot pin back after the bus has let go of it.
     _lease: FlashLease<'a>,
 }
 
 impl<'a> Bus<'a> {
     fn enable(pins: &'a Pins, camera: &'a Camera, hz: u32) -> Result<Self, String> {
-        let lease = camera.lend_flash()?;
+        let driven = driven();
+        // On the camera's own supply, the SoC is up too, so it is parked first.
+        let lease = camera.lend_flash(!driven.vcc)?;
         let tx = Dma::new(CHUNK)?;
         let rx = Dma::new(CHUNK)?;
         // Power before signals: a pin driven into an unpowered flash feeds it through its
         // input protection.
-        let started = take_chip(pins).and_then(|()| start_bus(pins)).and_then(|()| {
+        let started = take_chip(pins, driven).and_then(|()| start_bus(pins)).and_then(|()| {
             // CS is a GPIO of its own, deselected before it drives, so it can stay low
             // across the pieces of one operation.
             camera::configure(pins.cs, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1)?;
@@ -382,6 +462,7 @@ impl<'a> Bus<'a> {
                     device,
                     tx,
                     rx,
+                    driven,
                     _lease: lease,
                 };
                 bus.wait_ready();
@@ -463,13 +544,18 @@ impl Drop for Bus<'_> {
 }
 
 /// Powers the chip from its VCC pin, at full strength as it feeds the chip, then drives HOLD
-/// high.
-fn take_chip(pins: &Pins) -> Result<(), EspError> {
-    camera::configure(pins.vcc, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1)?;
-    // SAFETY: the pin is configured just above.
-    esp!(unsafe { sys::gpio_set_drive_capability(pins.vcc, sys::gpio_drive_cap_t_GPIO_DRIVE_CAP_3) })?;
-    thread::sleep(POWER_UP);
-    camera::configure(pins.hold, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1)
+/// high: each only if set to be driven.
+fn take_chip(pins: &Pins, driven: Driven) -> Result<(), EspError> {
+    if driven.vcc {
+        camera::configure(pins.vcc, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1)?;
+        // SAFETY: the pin is configured just above.
+        esp!(unsafe { sys::gpio_set_drive_capability(pins.vcc, sys::gpio_drive_cap_t_GPIO_DRIVE_CAP_3) })?;
+        thread::sleep(POWER_UP);
+    }
+    if driven.hold {
+        camera::configure(pins.hold, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1)?;
+    }
+    Ok(())
 }
 
 /// Lets go of HOLD, then of VCC.

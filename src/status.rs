@@ -10,6 +10,9 @@
 //!   `{"ok":true,"message":...}` or `{"ok":false,"error":...}`.
 //! * `POST /api/camera?bootsel=low` or `high`: what BOOTSEL does to boot from USB, now and
 //!   on every boot after. Same answers.
+//! * `GET /api/flash`: whether the flash programmer drives the chip's VCC and HOLD, as JSON.
+//! * `POST /api/flash?vcc=driven|alone&hold=driven|alone`, either or both: what it drives
+//!   from the next flashrom session on, and on every boot after. Same answers.
 //! * `GET /api/wifi`, on the Wi-Fi builds: the radio's TX power cap in dBm, and whether this
 //!   boot followed a brownout, which holds it at 13 dBm until the next reset, as JSON.
 //! * `POST /api/wifi?tx_dbm=<dBm>`, on the Wi-Fi builds: caps the TX power, 2 to 20 dBm, now
@@ -167,6 +170,36 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
             json(req, &answer(camera.request(action)))
         })
         .map_err(|err| format!("status page: {err}"))?;
+    server
+        .fn_handler("/api/flash", Method::Get, |req: Request<&mut EspHttpConnection<'_>>| {
+            json(req, &flash_json(serprog::driven()))
+        })
+        .map_err(|err| format!("status page: {err}"))?;
+    server
+        .fn_handler("/api/flash", Method::Post, |req: Request<&mut EspHttpConnection<'_>>| {
+            let query = req.uri().split_once('?').map_or("", |(_, query)| query);
+            let field = |name: &str| query.split('&').find_map(|pair| pair.strip_prefix(name));
+            let setting = |name: &str| match field(name) {
+                None => Some(None),
+                Some("driven") => Some(Some(true)),
+                Some("alone") => Some(Some(false)),
+                Some(_) => None,
+            };
+            let (Some(vcc), Some(hold)) = (setting("vcc="), setting("hold=")) else {
+                let body = r#"{"ok":false,"error":"vcc and hold must be driven or alone"}"#;
+                return req
+                    .into_response(400, None, &[("Content-Type", "application/json")])?
+                    .write_all(body.as_bytes());
+            };
+            if vcc.is_none() && hold.is_none() {
+                let body = r#"{"ok":false,"error":"give vcc, hold or both: driven or alone"}"#;
+                return req
+                    .into_response(400, None, &[("Content-Type", "application/json")])?
+                    .write_all(body.as_bytes());
+            }
+            json(req, &answer(serprog::set_driven(vcc, hold)))
+        })
+        .map_err(|err| format!("status page: {err}"))?;
     Ok(Status {
         _mdns: mdns,
         _server: server,
@@ -249,8 +282,11 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 <p>The camera's serial console is on port {console}, raw, one client at a time (a new one takes over). Ctrl-] leaves:</p>
 <pre>socat -,rawer,escape=0x1d tcp:{name}.local:{console}</pre>
 <p>For tools that set the baud rate or send a break, RFC 2217 on port {rfc2217}: <code>rfc2217://{name}.local:{rfc2217}</code>. Its DTR holds the boot pin and RTS cuts the power, as esptool's auto-reset drives an ESP32's IO0 and EN; both or neither asserted, as a terminal opens, leaves the camera alone.</p>
-<p>The camera's flash chip, through a SOIC-8 clip, for flashrom 1.4.0 or later on port {serprog}, with the camera off:</p>
+<p>The camera's flash chip, through a SOIC-8 clip, for flashrom 1.4.0 or later on port {serprog}:</p>
 <pre>flashrom -p serprog:ip={name}.local:{serprog} -r dump.bin</pre>
+<p class="buttons">VCC <select id="flash-vcc" title="Who powers the flash chip during flashrom"><option value="driven">from the backpack</option><option value="alone">from the camera</option></select> HOLD <select id="flash-hold" title="Whether the backpack holds HOLD high during flashrom"><option value="driven">driven high</option><option value="alone">left alone</option></select> <button id="flash-set" title="Set what the flash programmer drives, from the next flashrom run on">Set</button></p>
+<p class="dim">VCC from the backpack needs the camera off. From the camera is for boards whose flash shares the SoC's 3.3 V rail, which the backpack's VCC would boot: each flashrom run then power-cycles the camera with the boot pin held, so its bootrom leaves the flash alone, and switches it off after. HOLD can be left alone for chips in quad mode, which ignore it.</p>
+<p id="flash-said"></p>
 <h2>Camera</h2>
 <p id="cam" class="dim">&nbsp;</p>
 <p class="buttons"><button data-a="power-cycle" title="Cut the camera's power for a second, then turn it back on">Power cycle</button> <button data-a="bootrom" title="Hold the boot pin through a power cycle, and let go once the bootrom shows up on USB">Enter bootrom</button> <button data-a="power-off" title="Cut the camera's power">Power off</button> <button data-a="power-on" title="Turn the camera's power on">Power on</button> <button data-a="boot-hold" title="Hold the boot pin and BOOTSEL, so the camera's next power-on boots from USB">Hold boot pin</button> <button data-a="boot-release" title="Let go of the boot pin">Release boot pin</button></p>
@@ -294,8 +330,8 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
             "<tr><td>GPIO{}</td><td>flash CS, pin 1, through the clip</td></tr>\n\
              <tr><td>GPIO{}</td><td>flash DO, pin 2</td></tr>\n\
              <tr><td>GPIO{}</td><td>flash CLK, pin 6</td></tr>\n\
-             <tr><td>GPIO{}</td><td>flash VCC, pin 8, during flashrom only (the 3V3 pin instead, on a bare chip)</td></tr>\n\
-             <tr><td>GPIO{}</td><td>flash HOLD, pin 7, high during flashrom only (WP, pin 3, unconnected)</td></tr>",
+             <tr><td>GPIO{}</td><td>flash VCC, pin 8, during flashrom only, from the backpack (the 3V3 pin instead, on a bare chip)</td></tr>\n\
+             <tr><td>GPIO{}</td><td>flash HOLD, pin 7, high during flashrom only, when driven (WP, pin 3, unconnected)</td></tr>",
             clip.cs, clip.miso, clip.clk, clip.vcc, clip.hold
         )),
     )
@@ -419,6 +455,15 @@ $('bootsel-set').onclick = () => {
     .then((r) => { $('said').textContent = r.ok ? r.message : r.error; })
     .catch(() => { $('said').textContent = 'The backpack did not answer.'; });
 };
+fetch('/api/flash').then((r) => r.json()).then((f) => { $('flash-vcc').value = f.vcc; $('flash-hold').value = f.hold; })
+  .catch(() => {});
+$('flash-set').onclick = () => {
+  $('flash-said').textContent = 'Setting the flash programmer...';
+  fetch('/api/flash?vcc=' + $('flash-vcc').value + '&hold=' + $('flash-hold').value, { method: 'POST' })
+    .then((r) => r.json())
+    .then((r) => { $('flash-said').textContent = r.ok ? r.message : r.error; })
+    .catch(() => { $('flash-said').textContent = 'The backpack did not answer.'; });
+};
 show();
 setInterval(show, 3000);
 </script>";
@@ -434,6 +479,11 @@ fn camera_json(status: &camera::Status) -> String {
         status.flash_lent,
         if status.bootsel_high { "high" } else { "low" },
     )
+}
+
+fn flash_json(driven: serprog::Driven) -> String {
+    let name = |driven: bool| if driven { "driven" } else { "alone" };
+    format!(r#"{{"vcc":"{}","hold":"{}"}}"#, name(driven.vcc), name(driven.hold))
 }
 
 /// dBm as quarter-dBm, rounded: 16.5 is 66.

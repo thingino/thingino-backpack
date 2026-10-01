@@ -148,10 +148,10 @@ fn run() -> Result<(), String> {
     #[cfg(esp32p4)]
     let (vcc, hold) = (peripherals.pins.gpio32, peripherals.pins.gpio53);
     let host = UsbHost::install().map_err(|err| err.to_string())?;
-    let camera = camera::start(power, boot, bootsel, host.clone(), nvs)?;
+    let camera = camera::start(power, boot, bootsel, host.clone(), nvs.clone())?;
     console::start(peripherals.uart1, tx, rx, Arc::clone(&camera))?;
     // The rest of the unit works without it.
-    if let Err(err) = serprog::start(cs, clk, miso, vcc, hold, Arc::clone(&camera)) {
+    if let Err(err) = serprog::start(cs, clk, miso, vcc, hold, Arc::clone(&camera), nvs) {
         error!("{err}");
     }
     // Findable as a camera is: the app's hub lists it and opens the page on port 80.
