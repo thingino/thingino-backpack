@@ -123,7 +123,7 @@ fn run() -> Result<(), String> {
     // nothing more is known.
     #[cfg(not(esp32p4))]
     let (power, boot, tx, rx) =
-        (peripherals.pins.gpio1, peripherals.pins.gpio9, peripherals.pins.gpio2, peripherals.pins.gpio3);
+        (peripherals.pins.gpio4, peripherals.pins.gpio9, peripherals.pins.gpio1, peripherals.pins.gpio2);
     #[cfg(esp32p4)]
     let (power, boot, tx, rx) =
         (peripherals.pins.gpio20, peripherals.pins.gpio21, peripherals.pins.gpio22, peripherals.pins.gpio23);

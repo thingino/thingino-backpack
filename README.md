@@ -46,10 +46,10 @@ images stream through it, so the default build runs without PSRAM.
 
 | ESP32-S3, -S2   | ESP32-P4                  | Camera                                                                   |
 |-----------------|---------------------------|--------------------------------------------------------------------------|
-| GPIO1           | GPIO20                    | Power switch (a MOSFET module or similar): high = camera on              |
+| GPIO4           | GPIO20                    | Power switch (a MOSFET module or similar): high = camera on              |
 | GPIO9           | GPIO21                    | Flash DI, pin 5 of an SOIC-8 NOR flash (open-drain: low = boot from USB) |
-| GPIO2 (TX)      | GPIO22 (TX)               | UART RX                                                                  |
-| GPIO3 (RX)      | GPIO23 (RX)               | UART TX                                                                  |
+| GPIO1 (TX)      | GPIO22 (TX)               | UART RX                                                                  |
+| GPIO2 (RX)      | GPIO23 (RX)               | UART TX                                                                  |
 | GPIO19, GPIO20  | the high-speed port's own | USB D-, D+                                                               |
 | GND             | GND                       | GND                                                                      |
 
