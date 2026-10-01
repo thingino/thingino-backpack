@@ -144,16 +144,6 @@ http://<host>.local/api/wifi-reset`): it forgets the network, the hostname and t
 and restarts into the setup portal. Erasing the NVS partition (`esptool.py erase_region
 0x9000 0x6000`) does the same without a network.
 
-The radio transmits at up to 20 dBm. The status page's Wi-Fi section turns that down, to
-anywhere from 2 dBm, for a supply that browns out when the radio transmits or a flash clip
-whose reads come back wrong. The setting is kept across restarts, and the same is an HTTP
-API:
-
-```sh
-curl http://<host>.local/api/wifi                       # {"tx_dbm":20,"brownout":false}
-curl -X POST 'http://<host>.local/api/wifi?tx_dbm=13'
-```
-
 ## Using it
 
 | Port      | Service                                                       |
@@ -240,25 +230,7 @@ transfer has gone unanswered, and the power cycles done for recovery.
 
 With the camera off, the unit speaks flashrom's serprog protocol on port 8888 and drives a
 SOIC-8 clip on the camera's flash chip, so flashrom 1.4.0 or later on any computer that
-reaches the unit reads and writes the chip over the network. flashrom connects over IPv4
-only: where `<host>.local` does not resolve to an IPv4 address, give it the one the status
-page lists.
-
-```sh
-curl -X POST 'http://<host>.local/api/camera?action=power-off'   # or Power off on the page
-flashrom -p serprog:ip=<host>.local:8888                         # probe: names the chip
-flashrom -p serprog:ip=<host>.local:8888 -r dump.bin
-flashrom -p serprog:ip=<host>.local:8888 -r check.bin && cmp dump.bin check.bin
-flashrom -p serprog:ip=<host>.local:8888 -w image.bin            # erases, writes, verifies
-```
-
-- The camera has to be off, and the unit starts with it on: after the unit restarts,
-  switch it off again. `Error: could not enable output buffers` is the unit refusing to
-  drive the clip, because the camera is on, on USB, or its UART TX is high.
-- When several chip definitions match, flashrom asks for one: add `-c` with the name that
-  matches the chip's marking, as `-c "MX25L12835F/MX25L12873F"`.
-- Two reads that match are the check that the clip grips every leg; a write verifies
-  itself.
+reaches the unit reads and writes the chip over the network.
 
 | ESP32-S3, -S2        | ESP32-P4             | Flash chip                                   |
 |----------------------|----------------------|----------------------------------------------|
@@ -269,19 +241,41 @@ flashrom -p serprog:ip=<host>.local:8888 -w image.bin            # erases, write
 | GPIO14               | GPIO48               | a switch from 3.3 V to VCC, pin 8 (high: on) |
 | GND                  | GND                  | GND, pin 4                                   |
 
-- The unit drives the clip only while flashrom has the pins enabled, and only with the
-  camera off: its power off, nothing on its USB port, and its UART TX low, as an unpowered
-  camera leaves it. Until flashrom is done the camera stays off: every camera action but
-  `power-off` is refused. Enabling switches VCC on before driving the pins; disabling, a
-  client that leaves, or one quiet for 30 s puts the pins back to high-Z and VCC off.
+- The switch is a high-side one, on while its pin is high: a load-switch module with an
+  active-high enable, or a P-channel MOSFET whose gate an NPN transistor pulls low. The
+  unit switches VCC on before it drives the other pins, and off once it has let go of them.
 - In-circuit, the clip's VCC powers the rest of the board's 3.3 V rail too, which can draw
   more than an ESP32 board's regulator gives: on one camera board, the unit dropped off
   Wi-Fi and then browned out at every start for minutes. Feed the switch from a 3.3 V
   supply of its own, good for 1 A, with its ground on the ESP32's.
 - 3.3 V chips only. A 1.8 V chip (W25Q...W, GD25LQ, MX25U, XM25QU) needs a level shifter
   and a 1.8 V supply.
-- WP (pin 3) and HOLD (pin 7) are pulled up on a camera's board. On a bare chip, tie both
-  to VCC.
+- WP (pin 3) and HOLD (pin 7) are pulled up on a camera's board. A bare chip needs both
+  tied to its VCC, and its VCC can go straight to 3.3 V, without the switch.
+
+Then run flashrom from any computer that reaches the unit. It connects over IPv4 only:
+where `<host>.local` does not resolve to an IPv4 address, give it the one the status page
+lists.
+
+```sh
+curl -X POST 'http://<host>.local/api/camera?action=power-off'   # or Power off on the page
+flashrom -p serprog:ip=<host>.local:8888                         # probe: names the chip
+flashrom -p serprog:ip=<host>.local:8888 -r dump.bin
+flashrom -p serprog:ip=<host>.local:8888 -r check.bin && cmp dump.bin check.bin
+flashrom -p serprog:ip=<host>.local:8888 -w image.bin            # erases, writes, verifies
+```
+
+- The camera has to be off: its power off, nothing on its USB port, and its UART TX low,
+  as an unpowered camera leaves it. The unit starts with the camera on, so after it
+  restarts, switch the camera off again. `Error: could not enable output buffers` is the
+  unit refusing to drive the clip for one of those reasons.
+- The unit drives the clip only while flashrom has the pins enabled. Until flashrom is
+  done, every camera action but `power-off` is refused; a client that leaves, or one quiet
+  for 30 s, gets the pins back to high-Z and VCC off.
+- When several chip definitions match, flashrom asks for one: add `-c` with the name that
+  matches the chip's marking, as `-c "MX25L12835F/MX25L12873F"`.
+- Two reads that match are the check that the clip grips every leg; a write verifies
+  itself.
 - The SPI clock is 8 MHz unless flashrom asks for another (`spispeed=2M`), up to 20 MHz.
 - A whole-chip read takes about 25 s for 16 MB. Every SPI command is a network round trip,
   so writing a page takes about 13 ms: about 55 s for each megabyte that changes, and
@@ -301,6 +295,21 @@ unanswered for good, and the ESP-IDF USB host has no transfer timeout. When that
 s, or when three port power cycles in a row fail to get the camera enumerated, the unit
 power-cycles the camera. It backs off from 30 s to 10 min while that keeps happening, and
 leaves a camera alone while its power is meant to be off or a bootrom entry is running.
+
+### Wi-Fi TX power
+
+On the S2 and S3, the radio transmits at up to 20 dBm. The status page's Wi-Fi section
+turns that down, to anywhere from 2 dBm, for a supply that browns out when the radio
+transmits or a flash clip whose reads come back wrong. The setting is kept across restarts
+and forgotten by Reset Wi-Fi, and the same is an HTTP API:
+
+```sh
+curl http://<host>.local/api/wifi                       # {"tx_dbm":20,"brownout":false}
+curl -X POST 'http://<host>.local/api/wifi?tx_dbm=13'
+```
+
+After a brownout reset the radio stays at 13 dBm or less until a reset for any other
+reason, whatever the setting, and `brownout` is `true`.
 
 ## Memory
 
@@ -326,7 +335,8 @@ type into its console, and cut its power. Keep it on a network you trust.
   and GND, lower `spispeed=`, or lower the TX power on the status page. A test chip on long
   leads read wrong at 20 dBm and right at 13 dBm until it was rewired.
 - **flashrom aborts with `buffer overflow detected`**: the hostname did not resolve, and
-  flashrom 1.4.0 crashes instead of saying so. Give it the unit's IPv4 address.
+  flashrom (1.4.0 to 1.8.0, at least) crashes instead of saying so. Give it the unit's
+  IPv4 address.
 - **RFC 2217 or the raw console stalls over IPv4 while IPv6 works**: some access points'
   hardware receive offload turns the Ethernet padding of tiny frames (1 to 5 bytes of TCP
   payload, as keystrokes are) into payload, and the connection desyncs. OpenWrt's airoha
