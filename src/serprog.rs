@@ -10,9 +10,9 @@
 //!
 //! The clip is driven only while flashrom has its pins enabled (`S_PIN_STATE`), and only
 //! once the camera module has lent the flash chip: the camera off and staying off, and the
-//! boot pin, already on the flash's DI, handed over as MOSI. Enabling powers the clip's VCC
-//! first and drives the pins after it; disabling, a client that leaves, or one quiet for
-//! [`IDLE_LIMIT`] puts the pins back to high-Z and the VCC off.
+//! boot pin, already on the flash's DI, handed over as MOSI. Disabling, a client that
+//! leaves, or one quiet for [`IDLE_LIMIT`] puts the pins back to high-Z. The clip's VCC is
+//! the unit's 3.3 V.
 //!
 //! The protocol is flashrom's own specification (serprog-protocol.rst), version 1, with the
 //! commands flashrom uses on an SPI-only programmer.
@@ -22,7 +22,6 @@ use core::time::Duration;
 use std::io::{self, Read, Write};
 use std::net::{Ipv6Addr, TcpListener, TcpStream};
 use std::sync::{Arc, OnceLock};
-use std::thread;
 
 use esp_idf_svc::hal::gpio::{InputPin, OutputPin};
 use esp_idf_svc::sys::{self, esp, EspError};
@@ -84,18 +83,10 @@ const SLOWEST_HZ: u32 = 100_000;
 /// The SPI clock is this divided by a whole number, so every frequency offered is one.
 const SPI_SOURCE_HZ: u32 = 80_000_000;
 
-/// A flash is ready well within a millisecond of power-on; this also covers the VCC
-/// switch's own rise.
-const POWER_UP: Duration = Duration::from_millis(10);
-
 /// flashrom talks the whole time it runs; a client quiet this long is gone.
 const IDLE_LIMIT: Duration = Duration::from_secs(30);
 
 const STACK: usize = 5 * 1024;
-
-/// The clip's VCC switch is on when its pin is high.
-const VCC_ON: u32 = 1;
-const VCC_OFF: u32 = 0;
 
 const HOST: sys::spi_host_device_t = sys::spi_host_device_t_SPI2_HOST;
 
@@ -106,7 +97,6 @@ pub struct Pins {
     pub clk: i32,
     pub miso: i32,
     pub mosi: i32,
-    pub vcc: i32,
 }
 
 static PINS: OnceLock<Pins> = OnceLock::new();
@@ -116,13 +106,11 @@ pub fn pins() -> Option<Pins> {
     PINS.get().copied()
 }
 
-/// Takes the clip's pins, leaves them high-Z and the VCC off, and serves flashrom on
-/// [`PORT`].
+/// Takes the clip's pins, leaves them high-Z, and serves flashrom on [`PORT`].
 pub fn start(
     cs: impl OutputPin + 'static,
     clk: impl OutputPin + 'static,
     miso: impl InputPin + 'static,
-    vcc: impl OutputPin + 'static,
     camera: Arc<Camera>,
 ) -> Result<(), String> {
     let pins = Pins {
@@ -130,20 +118,16 @@ pub fn start(
         clk: i32::from(clk.pin()),
         miso: i32::from(miso.pin()),
         mosi: camera.pins().1,
-        vcc: i32::from(vcc.pin()),
     };
     let failed = |err: EspError| format!("flash programmer: {err}");
-    // The switch's level goes in before its pin becomes an output, so the clip is never
-    // powered for an instant at boot.
-    camera::configure(pins.vcc, sys::gpio_mode_t_GPIO_MODE_OUTPUT, VCC_OFF).map_err(failed)?;
     for pin in [pins.cs, pins.clk, pins.miso] {
         release(pin).map_err(failed)?;
     }
     let listener = TcpListener::bind((Ipv6Addr::UNSPECIFIED, PORT)).map_err(|err| format!("flash programmer: {err}"))?;
     let _ = PINS.set(pins);
     info!(
-        "serprog: flashrom on port {PORT}; clip CS GPIO{}, CLK GPIO{}, MISO GPIO{}, MOSI GPIO{}, VCC GPIO{}",
-        pins.cs, pins.clk, pins.miso, pins.mosi, pins.vcc
+        "serprog: flashrom on port {PORT}; clip CS GPIO{}, CLK GPIO{}, MISO GPIO{}, MOSI GPIO{}",
+        pins.cs, pins.clk, pins.miso, pins.mosi
     );
     crate::spawn_named(c"serprog", STACK, move || serve(&listener, &pins, &camera))
         .map_err(|err| format!("flash programmer: {err}"))
@@ -168,7 +152,7 @@ fn serve(listener: &TcpListener, pins: &Pins, camera: &Camera) {
             .set_nodelay(true)
             .and_then(|()| stream.set_read_timeout(Some(IDLE_LIMIT)))
             .and_then(|()| session.run(&mut stream));
-        // Before anything else: the pins go back to high-Z and the VCC off.
+        // Before anything else: the pins go back to high-Z.
         drop(session);
         match ended {
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => info!("serprog: {peer} left"),
@@ -269,7 +253,7 @@ impl Session<'_> {
         if self.bus.is_none() {
             match Bus::enable(self.pins, self.camera, self.hz) {
                 Ok(bus) => {
-                    info!("serprog: clip powered and driven at {} kHz", self.hz / 1000);
+                    info!("serprog: clip driven at {} kHz", self.hz / 1000);
                     self.bus = Some(bus);
                 }
                 Err(why) => {
@@ -345,7 +329,7 @@ impl Session<'_> {
     }
 }
 
-/// The SPI bus on the clip, powered, for as long as flashrom has the pins enabled.
+/// The SPI bus on the clip, for as long as flashrom has the pins enabled.
 struct Bus<'a> {
     pins: &'a Pins,
     device: sys::spi_device_handle_t,
@@ -360,10 +344,6 @@ impl<'a> Bus<'a> {
         let lease = camera.lend_flash()?;
         let tx = Dma::new(CHUNK)?;
         let rx = Dma::new(CHUNK)?;
-        // Power before signals: a pin driven into an unpowered flash feeds it through its
-        // input protection.
-        set(pins.vcc, VCC_ON);
-        thread::sleep(POWER_UP);
         let started = start_bus(pins).and_then(|()| {
             // CS is a GPIO of its own, deselected before it drives, so it can stay low
             // across the pieces of one operation.
@@ -380,7 +360,6 @@ impl<'a> Bus<'a> {
             }),
             Err(err) => {
                 stop_bus(pins);
-                set(pins.vcc, VCC_OFF);
                 Err(format!("SPI bus: {err}"))
             }
         }
@@ -423,8 +402,7 @@ impl Drop for Bus<'_> {
         // SAFETY: the device is this bus's and has nothing in flight.
         unsafe { sys::spi_bus_remove_device(self.device) };
         stop_bus(self.pins);
-        set(self.pins.vcc, VCC_OFF);
-        info!("serprog: clip released and unpowered");
+        info!("serprog: clip released");
     }
 }
 

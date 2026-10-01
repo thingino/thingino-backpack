@@ -281,8 +281,8 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
             "<tr><td>GPIO{}</td><td>flash CS, pin 1, through the clip</td></tr>\n\
              <tr><td>GPIO{}</td><td>flash DO, pin 2</td></tr>\n\
              <tr><td>GPIO{}</td><td>flash CLK, pin 6</td></tr>\n\
-             <tr><td>GPIO{}</td><td>the switch on the clip's VCC, to pin 8 (high: on)</td></tr>",
-            clip.cs, clip.miso, clip.clk, clip.vcc
+             <tr><td>3V3</td><td>flash VCC, pin 8</td></tr>",
+            clip.cs, clip.miso, clip.clk
         )),
     )
 }

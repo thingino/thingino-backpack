@@ -254,26 +254,21 @@ With the camera off, the unit speaks flashrom's serprog protocol on port 8888 an
 SOIC-8 clip on the camera's flash chip, so flashrom 1.4.0 or later on any computer that
 reaches the unit reads and writes the chip over the network.
 
-| ESP32-S3, -S2        | ESP32-P4             | Flash chip                                   |
-|----------------------|----------------------|----------------------------------------------|
-| GPIO5                | GPIO45               | CS, pin 1                                    |
-| GPIO8                | GPIO47               | DO, pin 2                                    |
-| GPIO7                | GPIO46               | CLK, pin 6                                   |
-| GPIO9, the boot pin  | GPIO21, the boot pin | DI, pin 5, wired already as the boot pin     |
-| GPIO4                | GPIO48               | a switch from 3.3 V to VCC, pin 8 (high: on) |
-| GND                  | GND                  | GND, pin 4                                   |
+| ESP32-S3, -S2        | ESP32-P4             | Flash chip                               |
+|----------------------|----------------------|------------------------------------------|
+| GPIO5                | GPIO45               | CS, pin 1                                |
+| GPIO8                | GPIO47               | DO, pin 2                                |
+| GPIO7                | GPIO46               | CLK, pin 6                               |
+| GPIO9, the boot pin  | GPIO21, the boot pin | DI, pin 5, wired already as the boot pin |
+| 3V3                  | 3V3                  | VCC, pin 8                               |
+| GND                  | GND                  | GND, pin 4                               |
 
-- The switch is a high-side one, on while its pin is high: a load-switch module with an
-  active-high enable, or a P-channel MOSFET whose gate an NPN transistor pulls low. The
-  unit switches VCC on before it drives the other pins, and off once it has let go of them.
-- In-circuit, the clip's VCC powers the rest of the board's 3.3 V rail too, which can draw
-  more than an ESP32 board's regulator gives: on one camera board, the unit dropped off
-  Wi-Fi and then browned out at every start for minutes. Feed the switch from a 3.3 V
-  supply of its own, good for 1 A, with its ground on the ESP32's.
+- Pin 1 is the chip's dot, and the clip's red wire goes on it. A clip on backwards puts the
+  unit's 3.3 V on the chip's ground pin, a short: the unit drops off Wi-Fi and browns out.
 - 3.3 V chips only. A 1.8 V chip (W25Q...W, GD25LQ, MX25U, XM25QU) needs a level shifter
   and a 1.8 V supply.
 - WP (pin 3) and HOLD (pin 7) are pulled up on a camera's board. A bare chip needs both
-  tied to its VCC, and its VCC can go straight to 3.3 V, without the switch.
+  tied to its VCC.
 
 Then run flashrom from any computer that reaches the unit. Until flashrom's serprog client
 gains IPv6 (1.8.0 has none), this is IPv4 only, though the unit listens on IPv6 too: where
@@ -293,7 +288,7 @@ flashrom -p serprog:ip=<host>.local:8888 -w image.bin            # erases, write
   unit refusing to drive the clip for one of those reasons.
 - The unit drives the clip only while flashrom has the pins enabled. Until flashrom is
   done, every camera action but `power-off` is refused; a client that leaves, or one quiet
-  for 30 s, gets the pins back to high-Z and VCC off.
+  for 30 s, gets the pins back to high-Z.
 - When several chip definitions match, flashrom asks for one: add `-c` with the name that
   matches the chip's marking, as `-c "MX25L12835F/MX25L12873F"`.
 - Two reads that match are the check that the clip grips every leg; a write verifies
