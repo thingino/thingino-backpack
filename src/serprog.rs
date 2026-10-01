@@ -27,6 +27,7 @@ use std::io::{self, Read, Write};
 use std::net::{Ipv6Addr, TcpListener, TcpStream};
 use std::sync::{Arc, OnceLock};
 use std::thread;
+use std::time::Instant;
 
 use esp_idf_svc::hal::gpio::{InputPin, OutputPin};
 use esp_idf_svc::sys::{self, esp, EspError};
@@ -88,8 +89,15 @@ const SLOWEST_HZ: u32 = 100_000;
 /// The SPI clock is this divided by a whole number, so every frequency offered is one.
 const SPI_SOURCE_HZ: u32 = 80_000_000;
 
-/// A flash is ready well within a millisecond of power-on.
+/// A bare flash is ready well within a millisecond of power-on.
 const POWER_UP: Duration = Duration::from_millis(10);
+
+/// On a board, VCC charges the board's capacitors too, and the chip answers 00s until they
+/// are; flashrom asked for one chip probes it once, right away.
+const READY_WITHIN: Duration = Duration::from_millis(500);
+
+/// JEDEC Read Identification, which every flash this is for answers once it is up.
+const RDID: u8 = 0x9F;
 
 /// flashrom talks the whole time it runs; a client quiet this long is gone.
 const IDLE_LIMIT: Duration = Duration::from_secs(30);
@@ -370,13 +378,17 @@ impl<'a> Bus<'a> {
             add_device(hz)
         });
         match started {
-            Ok(device) => Ok(Self {
-                pins,
-                device,
-                tx,
-                rx,
-                _lease: lease,
-            }),
+            Ok(device) => {
+                let mut bus = Self {
+                    pins,
+                    device,
+                    tx,
+                    rx,
+                    _lease: lease,
+                };
+                bus.wait_ready();
+                Ok(bus)
+            }
             Err(err) => {
                 stop_bus(pins);
                 release_chip(pins);
@@ -398,6 +410,31 @@ impl<'a> Bus<'a> {
 
     fn deselect(&self) {
         set(self.pins.cs, 1);
+    }
+
+    /// Waits until the chip gives the same ID twice, or [`READY_WITHIN`] passes; a chip that
+    /// never does is flashrom's to report.
+    fn wait_ready(&mut self) {
+        let deadline = Instant::now() + READY_WITHIN;
+        let mut last = None;
+        while Instant::now() < deadline {
+            self.tx.slice(4).copy_from_slice(&[RDID, 0xFF, 0xFF, 0xFF]);
+            self.select();
+            let result = self.transfer(4, true);
+            self.deselect();
+            if result.is_err() {
+                return;
+            }
+            let rx = self.rx.slice(4);
+            let id = [rx[1], rx[2], rx[3]];
+            let valid = id != [0; 3] && id != [0xFF; 3];
+            if valid && last == Some(id) {
+                return;
+            }
+            last = valid.then_some(id);
+            thread::sleep(Duration::from_millis(1));
+        }
+        warn!("serprog: no flash answered within {} ms", READY_WITHIN.as_millis());
     }
 
     /// One SPI transaction of `n` bytes out of `tx`, captured into `rx` when `read`.
