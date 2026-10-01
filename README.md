@@ -229,13 +229,26 @@ transfer has gone unanswered, and the power cycles done for recovery.
 ### Flash chip
 
 With the camera off, the unit speaks flashrom's serprog protocol on port 8888 and drives a
-SOIC-8 clip on the camera's flash chip. It takes flashrom 1.4.0 or later, which reaches the
-unit over IPv4 only:
+SOIC-8 clip on the camera's flash chip, so flashrom 1.4.0 or later on any computer that
+reaches the unit reads and writes the chip over the network. flashrom connects over IPv4
+only: where `<host>.local` does not resolve to an IPv4 address, give it the one the status
+page lists.
 
 ```sh
+curl -X POST 'http://<host>.local/api/camera?action=power-off'   # or Power off on the page
+flashrom -p serprog:ip=<host>.local:8888                         # probe: names the chip
 flashrom -p serprog:ip=<host>.local:8888 -r dump.bin
-flashrom -p serprog:ip=<host>.local:8888 -w image.bin
+flashrom -p serprog:ip=<host>.local:8888 -r check.bin && cmp dump.bin check.bin
+flashrom -p serprog:ip=<host>.local:8888 -w image.bin            # erases, writes, verifies
 ```
+
+- The camera has to be off, and the unit starts with it on: after the unit restarts,
+  switch it off again. `Error: could not enable output buffers` is the unit refusing to
+  drive the clip, because the camera is on, on USB, or its UART TX is high.
+- When several chip definitions match, flashrom asks for one: add `-c` with the name that
+  matches the chip's marking, as `-c "MX25L12835F/MX25L12873F"`.
+- Two reads that match are the check that the clip grips every leg; a write verifies
+  itself.
 
 | ESP32-S3, -S2        | ESP32-P4             | Flash chip                                   |
 |----------------------|----------------------|----------------------------------------------|
