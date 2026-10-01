@@ -140,15 +140,25 @@ unit restarts and joins. It keeps rejoining after any outage, takes IPv6 address
 SLAAC as well as DHCPv4, and announces itself over mDNS.
 
 To set it up again, press **Reset Wi-Fi** on the status page (or `curl -X POST
-http://<host>.local/api/wifi-reset`): it forgets the network and the hostname and restarts
-into the setup portal. Erasing the NVS partition (`esptool.py erase_region 0x9000 0x6000`)
-does the same without a network.
+http://<host>.local/api/wifi-reset`): it forgets the network, the hostname and the TX power
+and restarts into the setup portal. Erasing the NVS partition (`esptool.py erase_region
+0x9000 0x6000`) does the same without a network.
+
+The radio transmits at up to 20 dBm. The status page's Wi-Fi section turns that down, to
+anywhere from 2 dBm, for a supply that browns out when the radio transmits or a flash clip
+whose reads come back wrong. The setting is kept across restarts, and the same is an HTTP
+API:
+
+```sh
+curl http://<host>.local/api/wifi                       # {"tx_dbm":20,"brownout":false}
+curl -X POST 'http://<host>.local/api/wifi?tx_dbm=13'
+```
 
 ## Using it
 
 | Port      | Service                                                       |
 |-----------|---------------------------------------------------------------|
-| 80        | Status page and `/api/camera`                                 |
+| 80        | Status page, `/api/camera` and `/api/wifi`                    |
 | 2217      | Camera console, RFC 2217                                      |
 | 3000      | Camera console, raw                                           |
 | 5050      | thingino-dfu daemon (`dfu-remote`)                            |
@@ -310,10 +320,11 @@ type into its console, and cut its power. Keep it on a network you trust.
 - **Brownouts at Wi-Fi start-up** (`BOD` in the log, reset loops): the radio's calibration
   is the current peak. After a brownout reset the radio comes up at 13 dBm instead of 20,
   until a reset for any other reason; a camera and the ESP32 on one weak USB port need a
-  powered hub.
+  powered hub. Brownouts while the unit runs: lower the TX power on the status page.
 - **flashrom reads that differ between runs**: the clip's leads pick up the radio, or the
   chip's supply sags when it transmits. Shorten the leads, put 100 nF across the chip's VCC
-  and GND, or lower `spispeed=`.
+  and GND, lower `spispeed=`, or lower the TX power on the status page. A test chip on long
+  leads read wrong at 20 dBm and right at 13 dBm until it was rewired.
 - **flashrom aborts with `buffer overflow detected`**: the hostname did not resolve, and
   flashrom 1.4.0 crashes instead of saying so. Give it the unit's IPv4 address.
 - **RFC 2217 or the raw console stalls over IPv4 while IPv6 works**: some access points'

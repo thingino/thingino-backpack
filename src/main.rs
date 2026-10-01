@@ -79,24 +79,29 @@ fn run() -> Result<(), String> {
     let peripherals = Peripherals::take().map_err(|err| err.to_string())?;
     let sysloop = EspSystemEventLoop::take().map_err(|err| err.to_string())?;
     #[cfg(not(esp32p4))]
-    let (network, hostname, reset) = {
+    let (network, hostname, settings) = {
         let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
         let Some(saved) = wifi::saved(&nvs)? else {
             // Nothing to join: the portal is all this boot does, until it is given a network.
             return portal::run(peripherals.modem, sysloop, nvs).map(|never| match never {});
         };
         let hostname = saved.hostname.clone();
-        let forget = nvs.clone();
-        let reset: status::Reset = Box::new(move || {
-            wifi::forget(&forget)?;
-            portal::restart_soon();
-            Ok(format!("Wi-Fi settings erased; restarting into the setup portal {}", wifi::portal_ssid()))
-        });
-        (wifi::join(peripherals.modem, sysloop, nvs, saved)?, hostname, Some(reset))
+        let (forget, store) = (nvs.clone(), nvs.clone());
+        let settings = status::Wifi {
+            reset: Box::new(move || {
+                wifi::forget(&forget)?;
+                portal::restart_soon();
+                Ok(format!("Wi-Fi settings erased; restarting into the setup portal {}", wifi::portal_ssid()))
+            }),
+            set_tx_power: Box::new(move |power| wifi::set_tx_power(&store, power)),
+            tx_power: wifi::tx_power,
+            browned_out: wifi::browned_out(),
+        };
+        (wifi::join(peripherals.modem, sysloop, nvs, saved)?, hostname, Some(settings))
     };
-    // Ethernet has nothing to set up, so nothing to reset.
+    // Ethernet has nothing to set up.
     #[cfg(esp32p4)]
-    let (network, hostname, reset) = {
+    let (network, hostname, settings) = {
         let hostname = eth::default_hostname();
         (eth::start(sysloop, &hostname)?, hostname, None)
     };
@@ -124,7 +129,7 @@ fn run() -> Result<(), String> {
         error!("{err}");
     }
     // Findable as a camera is: the app's hub lists it and opens the page on port 80.
-    let status = status::start(&hostname, camera, reset)?;
+    let status = status::start(&hostname, camera, settings)?;
     memory_report("after the network and USB host");
 
     // The daemon's operations are deep async state machines, and a transfer blocks the

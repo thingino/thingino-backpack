@@ -5,6 +5,7 @@
 //! good after a brief outage. Every loss, a failed first join included, schedules another
 //! attempt, backing off from one second to thirty.
 
+use core::ops::RangeInclusive;
 use core::time::Duration;
 use std::ffi::CString;
 use std::net::IpAddr;
@@ -16,7 +17,7 @@ use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::handle::RawHandle;
 use esp_idf_svc::netif::{EspNetif, IpEvent, NetifConfiguration, NetifStack};
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
-use esp_idf_svc::sys::{self, EspError};
+use esp_idf_svc::sys::{self, esp, EspError};
 use esp_idf_svc::wifi::{AuthMethod, ClientConfiguration, Configuration, EspWifi, WifiDriver, WifiEvent};
 use log::{info, warn};
 
@@ -41,11 +42,18 @@ enum Change {
 }
 
 /// The NVS namespace and keys usbipdcpp_esp32 uses, so a board provisioned by that firmware
-/// keeps its credentials; `hostname` is this firmware's own.
+/// keeps its credentials; `hostname` and `tx_power` are this firmware's own.
 const NAMESPACE: &str = "wifi";
 const SSID: &str = "ssid";
 const SECRET: &str = "passwd";
 const HOSTNAME: &str = "hostname";
+const TX_POWER: &str = "tx_power";
+
+/// The TX power caps ESP-IDF takes, in its quarter-dBm: 2 to 20 dBm.
+const TX_POWER_RANGE: RangeInclusive<i8> = 8..=80;
+/// Where the PHY puts the radio after a brownout reset (CONFIG_ESP_PHY_REDUCE_TX_POWER):
+/// 13 dBm.
+const BROWNOUT_TX_POWER: i8 = 52;
 
 /// The network to join, as saved in NVS.
 pub struct Saved {
@@ -85,13 +93,70 @@ pub fn store(nvs: &EspDefaultNvsPartition, ssid: &str, secret: &str, hostname: O
     Ok(())
 }
 
-/// Forgets the network and the hostname, so the next boot opens the setup portal.
+/// Forgets the network, the hostname and the TX power, so the next boot opens the setup
+/// portal at full power.
 pub fn forget(nvs: &EspDefaultNvsPartition) -> Result<(), String> {
     let store = EspNvs::new(nvs.clone(), NAMESPACE, true).map_err(|err| format!("opening NVS: {err}"))?;
-    for key in [SSID, SECRET, HOSTNAME] {
+    for key in [SSID, SECRET, HOSTNAME, TX_POWER] {
         store.remove(key).map_err(|err| err.to_string())?;
     }
     Ok(())
+}
+
+/// Caps the radio's TX power at `power` quarter-dBm, now and on every boot after, answering
+/// what to tell the user.
+pub fn set_tx_power(nvs: &EspDefaultNvsPartition, power: i8) -> Result<String, String> {
+    if !TX_POWER_RANGE.contains(&power) {
+        return Err("the TX power must be 2 to 20 dBm".into());
+    }
+    let took = cap_tx_power(power)?;
+    let store = EspNvs::new(nvs.clone(), NAMESPACE, true).map_err(|err| format!("opening NVS: {err}"))?;
+    store.set_i8(TX_POWER, power).map_err(|err| err.to_string())?;
+    info!("wifi: TX power {} dBm, saved", dbm(took));
+    Ok(if took < power && browned_out() {
+        format!(
+            "TX power {} dBm saved; {} dBm until the next reset, as this boot followed a brownout",
+            dbm(power),
+            dbm(took)
+        )
+    } else {
+        format!("TX power {} dBm", dbm(took))
+    })
+}
+
+/// The radio's TX power cap now, in quarter-dBm; `None` before the radio has started.
+pub fn tx_power() -> Option<i8> {
+    let mut power = 0_i8;
+    // SAFETY: `power` outlives the call.
+    (unsafe { sys::esp_wifi_get_max_tx_power(&raw mut power) } == 0).then_some(power)
+}
+
+/// This boot followed a brownout: the PHY came up at 13 dBm, and the cap stays there until
+/// a reset for any other reason.
+pub fn browned_out() -> bool {
+    // SAFETY: reads what the startup code recorded.
+    let reason = unsafe { sys::esp_reset_reason() };
+    reason == sys::esp_reset_reason_t_ESP_RST_BROWNOUT
+}
+
+/// Quarter-dBm as dBm: 52 is 13, 66 is 16.5.
+fn dbm(power: i8) -> f32 {
+    f32::from(power) / 4.0
+}
+
+/// Caps the started radio's TX power, at 13 dBm at most after a brownout, answering the cap
+/// the driver took.
+fn cap_tx_power(power: i8) -> Result<i8, String> {
+    let power = if browned_out() { power.min(BROWNOUT_TX_POWER) } else { power };
+    // SAFETY: a plain call into the driver, which checks its argument.
+    esp!(unsafe { sys::esp_wifi_set_max_tx_power(power) }).map_err(|err| format!("TX power: {err}"))?;
+    tx_power().ok_or_else(|| "TX power: the driver did not say what it took".into())
+}
+
+/// The saved TX power cap, if one was set.
+fn saved_tx_power(nvs: &EspDefaultNvsPartition) -> Result<Option<i8>, String> {
+    let store = EspNvs::new(nvs.clone(), NAMESPACE, true).map_err(|err| format!("opening NVS: {err}"))?;
+    store.get_i8(TX_POWER).map_err(|err| err.to_string())
 }
 
 /// The name of the setup portal's access point.
@@ -119,6 +184,11 @@ pub fn join(
     saved: Saved,
 ) -> Result<Station, String> {
     let Saved { ssid, secret, hostname } = saved;
+    // Joining matters more than the setting.
+    let tx_power = saved_tx_power(&nvs).unwrap_or_else(|err| {
+        warn!("wifi: reading the TX power setting: {err}");
+        None
+    });
     let driver = WifiDriver::new(modem, sysloop.clone(), Some(nvs)).map_err(|err| err.to_string())?;
     let sta = EspNetif::new_with_conf(&sta_configuration()).map_err(|err| err.to_string())?;
     let ap = EspNetif::new(NetifStack::Ap).map_err(|err| err.to_string())?;
@@ -163,6 +233,13 @@ pub fn join(
     wifi.start().map_err(|err| err.to_string())?;
     // Every DFU block is a request/response pair; modem sleep adds 100 ms stalls to each.
     unsafe { sys::esp_wifi_set_ps(sys::wifi_ps_type_t_WIFI_PS_NONE) };
+    // The cap takes only once the radio is started.
+    if tx_power.is_some() || browned_out() {
+        match cap_tx_power(tx_power.unwrap_or(*TX_POWER_RANGE.end())) {
+            Ok(took) => info!("wifi: TX power {} dBm", dbm(took)),
+            Err(err) => warn!("wifi: {err}"),
+        }
+    }
     Ok(Station {
         _wifi: wifi,
         _events: [link, addresses],

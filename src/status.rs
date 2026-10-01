@@ -8,8 +8,12 @@
 //!   has gone unanswered, and power cycles done for recovery, as JSON.
 //! * `POST /api/camera?action=<action>`: one of [`Action::NAMES`]; answers
 //!   `{"ok":true,"message":...}` or `{"ok":false,"error":...}`.
-//! * `POST /api/wifi-reset`, on the Wi-Fi builds: forgets the network and restarts into the
-//!   setup portal. Same answers.
+//! * `GET /api/wifi`, on the Wi-Fi builds: the radio's TX power cap in dBm, and whether this
+//!   boot followed a brownout, which holds it at 13 dBm until the next reset, as JSON.
+//! * `POST /api/wifi?tx_dbm=<dBm>`, on the Wi-Fi builds: caps the TX power, 2 to 20 dBm, now
+//!   and on every boot after. Same answers as the camera's.
+//! * `POST /api/wifi-reset`, on the Wi-Fi builds: forgets the network, the hostname and the
+//!   TX power, and restarts into the setup portal. Same answers.
 
 use core::ffi::CStr;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -26,9 +30,18 @@ use crate::camera::{self, Action, Camera};
 use crate::console;
 use crate::serprog;
 
-/// Forgets the saved network and restarts into the setup portal, answering what to tell the
-/// user.
-pub type Reset = Box<dyn Fn() -> Result<String, String> + Send + Sync + 'static>;
+/// What the page changes on the Wi-Fi builds. The closures answer what to tell the user.
+pub struct Wifi {
+    /// Forgets the network, the hostname and the TX power, and restarts into the setup
+    /// portal.
+    pub reset: Box<dyn Fn() -> Result<String, String> + Send + Sync + 'static>,
+    /// Caps the radio's TX power, in quarter-dBm, now and on every boot after.
+    pub set_tx_power: Box<dyn Fn(i8) -> Result<String, String> + Send + Sync + 'static>,
+    /// The radio's TX power cap now, in quarter-dBm.
+    pub tx_power: fn() -> Option<i8>,
+    /// This boot followed a brownout, which holds the radio at 13 dBm until the next reset.
+    pub browned_out: bool,
+}
 
 /// The announcement and the page; dropping it ends both.
 pub struct Status {
@@ -36,7 +49,7 @@ pub struct Status {
     _server: EspHttpServer<'static>,
 }
 
-pub fn start(hostname: &str, camera: Arc<Camera>, reset: Option<Reset>) -> Result<Status, String> {
+pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<Status, String> {
     let mut mdns = EspMdns::take().map_err(|err| format!("mDNS: {err}"))?;
     mdns.set_hostname(hostname).map_err(|err| format!("mDNS: {err}"))?;
     mdns.set_instance_name(hostname).map_err(|err| format!("mDNS: {err}"))?;
@@ -54,21 +67,43 @@ pub fn start(hostname: &str, camera: Arc<Camera>, reset: Option<Reset>) -> Resul
     .map_err(|err| format!("status page: {err}"))?;
     let name = hostname.to_owned();
     let pins = camera.pins();
-    let resettable = reset.is_some();
+    let has_wifi = wifi.is_some();
     server
         .fn_handler("/", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
             req.into_response(200, None, &[("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])?
-                .write_all(page(&name, pins, resettable).as_bytes())
+                .write_all(page(&name, pins, has_wifi).as_bytes())
         })
         .map_err(|err| format!("status page: {err}"))?;
-    if let Some(reset) = reset {
+    if let Some(Wifi {
+        reset,
+        set_tx_power,
+        tx_power,
+        browned_out,
+    }) = wifi
+    {
         server
             .fn_handler("/api/wifi-reset", Method::Post, move |req: Request<&mut EspHttpConnection<'_>>| {
-                let body = match reset() {
-                    Ok(message) => format!(r#"{{"ok":true,"message":"{}"}}"#, json_escape(&message)),
-                    Err(error) => format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(&error)),
+                json(req, &answer(reset()))
+            })
+            .map_err(|err| format!("status page: {err}"))?;
+        server
+            .fn_handler("/api/wifi", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
+                let power = tx_power().map_or_else(|| "null".to_owned(), |power| (f32::from(power) / 4.0).to_string());
+                json(req, &format!(r#"{{"tx_dbm":{power},"brownout":{browned_out}}}"#))
+            })
+            .map_err(|err| format!("status page: {err}"))?;
+        server
+            .fn_handler("/api/wifi", Method::Post, move |req: Request<&mut EspHttpConnection<'_>>| {
+                let power = req.uri().split_once('?').and_then(|(_, query)| {
+                    query.split('&').find_map(|pair| pair.strip_prefix("tx_dbm=")).and_then(quarter_dbm)
+                });
+                let Some(power) = power else {
+                    let body = r#"{"ok":false,"error":"tx_dbm must be the TX power in dBm, 2 to 20"}"#;
+                    return req
+                        .into_response(400, None, &[("Content-Type", "application/json")])?
+                        .write_all(body.as_bytes());
                 };
-                json(req, &body)
+                json(req, &answer(set_tx_power(power)))
             })
             .map_err(|err| format!("status page: {err}"))?;
     }
@@ -89,11 +124,7 @@ pub fn start(hostname: &str, camera: Arc<Camera>, reset: Option<Reset>) -> Resul
                     .into_response(400, None, &[("Content-Type", "application/json")])?
                     .write_all(body.as_bytes());
             };
-            let body = match camera.request(action) {
-                Ok(message) => format!(r#"{{"ok":true,"message":"{}"}}"#, json_escape(&message)),
-                Err(error) => format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(&error)),
-            };
-            json(req, &body)
+            json(req, &answer(camera.request(action)))
         })
         .map_err(|err| format!("status page: {err}"))?;
     Ok(Status {
@@ -136,9 +167,9 @@ fn endpoints() -> Vec<String> {
     out
 }
 
-/// `camera` is the power and boot pin GPIOs; `resettable`, whether the unit has a Wi-Fi
-/// setup to go back to.
-fn page(hostname: &str, camera: (i32, i32), resettable: bool) -> String {
+/// `camera` is the power and boot pin GPIOs; `wifi`, whether the unit is on Wi-Fi, with
+/// settings of its own.
+fn page(hostname: &str, camera: (i32, i32), wifi: bool) -> String {
     let name = escape(hostname);
     let endpoints = endpoints();
     // The mDNS name survives a DHCP renumbering and an ISP prefix change; the addresses
@@ -163,7 +194,7 @@ h2 {{ font-size: 1.1rem; margin: 1.5rem 0 .25rem; }}
 table {{ border-collapse: collapse; }}
 td {{ padding: .15rem .8rem .15rem 0; vertical-align: top; }}
 td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
-.buttons button {{ margin: 0 .25rem .5rem 0; padding: .45rem .7rem; font-size: .95rem; border-radius: .4rem; border: 1px solid #444; background: #1c1c1c; color: #eee; cursor: pointer; }}
+.buttons button, .buttons select {{ margin: 0 .25rem .5rem 0; padding: .45rem .7rem; font-size: .95rem; border-radius: .4rem; border: 1px solid #444; background: #1c1c1c; color: #eee; cursor: pointer; }}
 </style>
 </head>
 <body>
@@ -194,7 +225,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 <tr><td>GND</td><td>camera ground</td></tr>
 {clip}
 </table>
-{setup}
+{wifi}
 {script}
 </body>
 </html>
@@ -206,7 +237,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
         console = console::PORT,
         rfc2217 = console::RFC2217_PORT,
         script = CAMERA_SCRIPT,
-        setup = if resettable { SETUP_SECTION } else { "" },
+        wifi = if wifi { WIFI_SECTION } else { "" },
         power = camera.0,
         boot = camera.1,
         tx = console::pins().0,
@@ -235,12 +266,31 @@ fn chip() -> String {
         .map_or_else(|_| "an ESP32".into(), |chip| chip.to_string_lossy().into_owned())
 }
 
-/// Going back to the setup portal, on the Wi-Fi builds.
-const SETUP_SECTION: &str = r#"<h2>Setup</h2>
-<p>Forget this network and the hostname, and restart into the setup portal, as on first boot.</p>
-<p class="buttons"><button id="wifi-reset" title="Forget the network and the hostname, and restart into the setup portal">Reset Wi-Fi</button></p>
+/// The Wi-Fi builds' settings: the radio's TX power, and going back to the setup portal.
+const WIFI_SECTION: &str = r#"<h2>Wi-Fi</h2>
+<p class="buttons">TX power <select id="tx-power" title="The most the radio transmits at">
+<option value="20">20 dBm, full</option><option value="19">19 dBm</option><option value="18">18 dBm</option><option value="17">17 dBm</option><option value="16">16 dBm</option><option value="15">15 dBm</option><option value="14">14 dBm</option><option value="13">13 dBm</option><option value="12">12 dBm</option><option value="11">11 dBm</option><option value="10">10 dBm</option><option value="9">9 dBm</option><option value="8">8 dBm</option><option value="7">7 dBm</option><option value="6">6 dBm</option><option value="5">5 dBm</option><option value="4">4 dBm</option><option value="3">3 dBm</option><option value="2">2 dBm</option>
+</select> <button id="tx-set" title="Set the TX power now and on every boot after">Set</button></p>
+<p class="dim">Lower it for a supply that browns out when the radio transmits, or for flash reads through a clip that come back wrong.</p>
+<p id="tx-said"></p>
+<p>Forget this network, the hostname and the TX power, and restart into the setup portal, as on first boot.</p>
+<p class="buttons"><button id="wifi-reset" title="Forget the network, the hostname and the TX power, and restart into the setup portal">Reset Wi-Fi</button></p>
 <p id="reset-said"></p>
 <script>
+{
+  const tx = document.getElementById('tx-power');
+  const said = document.getElementById('tx-said');
+  fetch('/api/wifi').then((r) => r.json()).then((w) => {
+    if (w.tx_dbm !== null) tx.value = String(w.tx_dbm);
+    if (w.brownout) said.textContent = 'This boot followed a brownout, so the radio stays at 13 dBm or less until the next reset.';
+  }).catch(() => {});
+  document.getElementById('tx-set').onclick = () => {
+    said.textContent = 'Setting the TX power...';
+    fetch('/api/wifi?tx_dbm=' + tx.value, { method: 'POST' }).then((r) => r.json())
+      .then((r) => { said.textContent = r.ok ? r.message : r.error; })
+      .catch(() => { said.textContent = 'The backpack did not answer.'; });
+  };
+}
 document.getElementById('wifi-reset').onclick = () => {
   if (!confirm('Forget the Wi-Fi settings and restart into the setup portal? The backpack leaves this network.')) return;
   const said = document.getElementById('reset-said');
@@ -283,6 +333,21 @@ fn camera_json(status: &camera::Status) -> String {
         status.recoveries,
         status.flash_lent,
     )
+}
+
+/// dBm as quarter-dBm, rounded: 16.5 is 66.
+fn quarter_dbm(text: &str) -> Option<i8> {
+    let quarters = (text.parse::<f32>().ok()? * 4.0).round();
+    // Only a value in range converts: NaN is in no range, and `as` would saturate.
+    (f32::from(i8::MIN)..=f32::from(i8::MAX)).contains(&quarters).then_some(quarters as i8)
+}
+
+/// An action's result as the API answers it.
+fn answer(result: Result<String, String>) -> String {
+    match result {
+        Ok(message) => format!(r#"{{"ok":true,"message":"{}"}}"#, json_escape(&message)),
+        Err(error) => format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(&error)),
+    }
 }
 
 fn json(req: Request<&mut EspHttpConnection<'_>>, body: &str) -> Result<(), EspIOError> {
