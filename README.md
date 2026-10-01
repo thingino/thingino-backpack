@@ -152,7 +152,7 @@ and restarts into the setup portal. Erasing the NVS partition (`esptool.py erase
 | 2217      | Camera console, RFC 2217                                      |
 | 3000      | Camera console, raw                                           |
 | 5050      | thingino-dfu daemon (`dfu-remote`)                            |
-| 8888      | Flash programmer, flashrom's serprog                          |
+| 8888      | Flash programmer, flashrom's serprog (IPv4 only, for now)     |
 | 5353/udp  | mDNS: the hostname, and `_thingino._tcp` for the thingino app |
 
 `<host>` below is the hostname, as `<host>.local`, or an address.
@@ -253,9 +253,9 @@ reaches the unit reads and writes the chip over the network.
 - WP (pin 3) and HOLD (pin 7) are pulled up on a camera's board. A bare chip needs both
   tied to its VCC, and its VCC can go straight to 3.3 V, without the switch.
 
-Then run flashrom from any computer that reaches the unit. It connects over IPv4 only:
-where `<host>.local` does not resolve to an IPv4 address, give it the one the status page
-lists.
+Then run flashrom from any computer that reaches the unit. Until flashrom's serprog client
+gains IPv6 (1.8.0 has none), this is IPv4 only, though the unit listens on IPv6 too: where
+`<host>.local` does not resolve to an IPv4 address, give it the one the status page lists.
 
 ```sh
 curl -X POST 'http://<host>.local/api/camera?action=power-off'   # or Power off on the page
