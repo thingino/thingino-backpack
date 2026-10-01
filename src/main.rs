@@ -132,16 +132,23 @@ fn run() -> Result<(), String> {
     #[cfg(esp32p4)]
     let bootsel = peripherals.pins.gpio48;
     // The clip on the camera's flash chip for flashrom: CS, CLK and MISO. MOSI is the boot
-    // pin, on the flash's DI already, and VCC the 3.3 V pin. The P4's are placeholders too.
+    // pin, on the flash's DI already. The P4's are placeholders too.
     #[cfg(not(esp32p4))]
     let (cs, clk, miso) = (peripherals.pins.gpio5, peripherals.pins.gpio7, peripherals.pins.gpio8);
     #[cfg(esp32p4)]
     let (cs, clk, miso) = (peripherals.pins.gpio45, peripherals.pins.gpio46, peripherals.pins.gpio47);
+    // The flash's VCC, WP and HOLD (pins 8, 3 and 7), driven only while flashrom works, for a
+    // backpack soldered to the camera's flash. GPIO39 and 40 are back pads on the XIAO,
+    // S3-Zero and Super Mini, and edge pins on the S2 Mini.
+    #[cfg(not(esp32p4))]
+    let (vcc, wp, hold) = (peripherals.pins.gpio3, peripherals.pins.gpio39, peripherals.pins.gpio40);
+    #[cfg(esp32p4)]
+    let (vcc, wp, hold) = (peripherals.pins.gpio32, peripherals.pins.gpio33, peripherals.pins.gpio53);
     let host = UsbHost::install().map_err(|err| err.to_string())?;
     let camera = camera::start(power, boot, bootsel, host.clone(), nvs)?;
     console::start(peripherals.uart1, tx, rx, Arc::clone(&camera))?;
     // The rest of the unit works without it.
-    if let Err(err) = serprog::start(cs, clk, miso, Arc::clone(&camera)) {
+    if let Err(err) = serprog::start(cs, clk, miso, vcc, wp, hold, Arc::clone(&camera)) {
         error!("{err}");
     }
     // Findable as a camera is: the app's hub lists it and opens the page on port 80.

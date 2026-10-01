@@ -294,8 +294,10 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
             "<tr><td>GPIO{}</td><td>flash CS, pin 1, through the clip</td></tr>\n\
              <tr><td>GPIO{}</td><td>flash DO, pin 2</td></tr>\n\
              <tr><td>GPIO{}</td><td>flash CLK, pin 6</td></tr>\n\
-             <tr><td>3V3</td><td>flash VCC, pin 8</td></tr>",
-            clip.cs, clip.miso, clip.clk
+             <tr><td>GPIO{}</td><td>flash VCC, pin 8, during flashrom only (the 3V3 pin instead, on a bare chip)</td></tr>\n\
+             <tr><td>GPIO{}</td><td>flash WP, pin 3, high during flashrom only</td></tr>\n\
+             <tr><td>GPIO{}</td><td>flash HOLD, pin 7, high during flashrom only</td></tr>",
+            clip.cs, clip.miso, clip.clk, clip.vcc, clip.wp, clip.hold
         )),
     )
 }
