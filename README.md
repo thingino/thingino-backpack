@@ -11,6 +11,8 @@ nothing else attached:
 - **Power and boot pin.** The unit switches the camera's power and holds its boot pin, so it
   can put the camera into the bootrom on request and power-cycle one that stopped
   answering on USB.
+- **Flash chip.** With a SOIC-8 clip on the camera's flash, the unit is a flash programmer
+  for flashrom, for a camera that no longer boots far enough to be flashed over USB.
 - **Findable like a camera.** A thingino-style Wi-Fi setup portal on first boot, then mDNS
   `_thingino._tcp` and a status page, which the
   [thingino app](https://github.com/thingino/thingino-app) lists and opens.
@@ -68,7 +70,8 @@ images stream through it, so the default build runs without PSRAM.
 - The ESP32's own log is on UART0 at 115200 8N1: GPIO43 TX and GPIO44 RX on the S2 and S3,
   GPIO37 TX and GPIO38 RX on the P4. Most boards bring it out through their USB-UART
   bridge. The camera's USB port is never a console.
-- The pins are set in `src/main.rs`, per chip; the status page lists the ones in use.
+- The pins are set in `src/main.rs`, per chip; the status page lists the ones in use. The
+  flash programmer's clip has pins of its own, in [Flash chip](#flash-chip).
 
 ## Flashing a release
 
@@ -149,6 +152,7 @@ does the same without a network.
 | 2217      | Camera console, RFC 2217                                      |
 | 3000      | Camera console, raw                                           |
 | 5050      | thingino-dfu daemon (`dfu-remote`)                            |
+| 8888      | Flash programmer, flashrom's serprog                          |
 | 5353/udp  | mDNS: the hostname, and `_thingino._tcp` for the thingino app |
 
 `<host>` below is the hostname, as `<host>.local`, or an address.
@@ -222,6 +226,51 @@ Answers are JSON: `{"ok":true,"message":...}` or `{"ok":false,"error":...}`. `GE
 /api/camera` reports the power, the boot pin, the USB devices enumerated, how long a USB
 transfer has gone unanswered, and the power cycles done for recovery.
 
+### Flash chip
+
+With the camera off, the unit speaks flashrom's serprog protocol on port 8888 and drives a
+SOIC-8 clip on the camera's flash chip. It takes flashrom 1.4.0 or later, which reaches the
+unit over IPv4 only:
+
+```sh
+flashrom -p serprog:ip=<host>.local:8888 -r dump.bin
+flashrom -p serprog:ip=<host>.local:8888 -w image.bin
+```
+
+| ESP32-S3, -S2        | ESP32-P4             | Flash chip                                   |
+|----------------------|----------------------|----------------------------------------------|
+| GPIO10               | GPIO45               | CS, pin 1                                    |
+| GPIO13               | GPIO47               | DO, pin 2                                    |
+| GPIO12               | GPIO46               | CLK, pin 6                                   |
+| GPIO16, the boot pin | GPIO21, the boot pin | DI, pin 5, wired already as the boot pin     |
+| GPIO14               | GPIO48               | a switch from 3.3 V to VCC, pin 8 (high: on) |
+| GND                  | GND                  | GND, pin 4                                   |
+
+- The unit drives the clip only while flashrom has the pins enabled, and only with the
+  camera off: its power off, nothing on its USB port, and its UART TX low, as an unpowered
+  camera leaves it. Until flashrom is done the camera stays off: every camera action but
+  `power-off` is refused. Enabling switches VCC on before driving the pins; disabling, a
+  client that leaves, or one quiet for 30 s puts the pins back to high-Z and VCC off.
+- In-circuit, the clip's VCC powers the rest of the board's 3.3 V rail too, which can draw
+  more than an ESP32 board's regulator gives: on one camera board, the unit dropped off
+  Wi-Fi and then browned out at every start for minutes. Feed the switch from a 3.3 V
+  supply of its own, good for 1 A, with its ground on the ESP32's.
+- 3.3 V chips only. A 1.8 V chip (W25Q...W, GD25LQ, MX25U, XM25QU) needs a level shifter
+  and a 1.8 V supply.
+- WP (pin 3) and HOLD (pin 7) are pulled up on a camera's board. On a bare chip, tie both
+  to VCC.
+- The SPI clock is 8 MHz unless flashrom asks for another (`spispeed=2M`), up to 20 MHz.
+- A whole-chip read takes about 25 s for 16 MB. Every SPI command is a network round trip,
+  so writing a page takes about 13 ms: about 55 s for each megabyte that changes, and
+  flashrom skips the blocks that already match. Before writing, flashrom reads the whole
+  chip, and it verifies the whole chip afterwards, about 25 s each. With a layout and `-i`,
+  `-N` (`--noverify-all`) keeps both to the included regions, which leaves damage to the
+  rest of the chip unchecked:
+
+```sh
+flashrom -p serprog:ip=<host>.local:8888 -l layout.txt -i uboot -N -w image.bin
+```
+
 ### Recovery
 
 A camera that stops serving USB without leaving the bus leaves a control transfer
@@ -249,6 +298,11 @@ type into its console, and cut its power. Keep it on a network you trust.
   is the current peak. After a brownout reset the radio comes up at 13 dBm instead of 20,
   until a reset for any other reason; a camera and the ESP32 on one weak USB port need a
   powered hub.
+- **flashrom reads that differ between runs**: the clip's leads pick up the radio, or the
+  chip's supply sags when it transmits. Shorten the leads, put 100 nF across the chip's VCC
+  and GND, or lower `spispeed=`.
+- **flashrom aborts with `buffer overflow detected`**: the hostname did not resolve, and
+  flashrom 1.4.0 crashes instead of saying so. Give it the unit's IPv4 address.
 - **RFC 2217 or the raw console stalls over IPv4 while IPv6 works**: some access points'
   hardware receive offload turns the Ethernet padding of tiny frames (1 to 5 bytes of TCP
   payload, as keystrokes are) into payload, and the connection desyncs. OpenWrt's airoha

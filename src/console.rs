@@ -71,6 +71,22 @@ pub fn set_tx(wanted: bool) {
     apply_tx();
 }
 
+/// Whether the camera's UART TX holds the line high, as an idle UART does whenever the
+/// camera has power. Sampled for up to 20 ms, so bytes in flight still show a high bit; an
+/// unpowered camera clamps the line low.
+pub fn camera_tx_high() -> bool {
+    let pin = RX_PIN.load(Ordering::SeqCst);
+    if pin < 0 {
+        return false;
+    }
+    (0..20).any(|_| {
+        std::thread::sleep(Duration::from_millis(1));
+        // SAFETY: reading a pin's input level changes nothing, whoever drives it.
+        let level = unsafe { sys::gpio_get_level(pin) };
+        level == 1
+    })
+}
+
 fn apply_tx() {
     let pin = TX_PIN.load(Ordering::SeqCst);
     let Ok(port) = sys::uart_port_t::try_from(UART_PORT.load(Ordering::SeqCst)) else {

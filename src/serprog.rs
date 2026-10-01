@@ -1,0 +1,531 @@
+//! A flash chip programmer for flashrom: its serprog protocol on [`PORT`], driving the
+//! camera's SPI NOR flash through a SOIC-8 clip while the camera is off.
+//!
+//! flashrom does the chip handling (probing, erasing, writing, verifying), each step one SPI
+//! operation and one network round trip:
+//!
+//! ```text
+//! flashrom -p serprog:ip=<host>:8888 -r dump.bin
+//! ```
+//!
+//! The clip is driven only while flashrom has its pins enabled (`S_PIN_STATE`), and only
+//! once the camera module has lent the flash chip: the camera off and staying off, and the
+//! boot pin, already on the flash's DI, handed over as MOSI. Enabling powers the clip's VCC
+//! first and drives the pins after it; disabling, a client that leaves, or one quiet for
+//! [`IDLE_LIMIT`] puts the pins back to high-Z and the VCC off.
+//!
+//! The protocol is flashrom's own specification (serprog-protocol.rst), version 1, with the
+//! commands flashrom uses on an SPI-only programmer.
+
+use core::ptr;
+use core::time::Duration;
+use std::io::{self, Read, Write};
+use std::net::{Ipv6Addr, TcpListener, TcpStream};
+use std::sync::{Arc, OnceLock};
+use std::thread;
+
+use esp_idf_svc::hal::gpio::{InputPin, OutputPin};
+use esp_idf_svc::sys::{self, esp, EspError};
+use log::{info, warn};
+
+use crate::camera::{self, Camera, FlashLease};
+
+pub const PORT: u16 = 8888;
+
+const ACK: u8 = 0x06;
+const NAK: u8 = 0x15;
+
+const NOP: u8 = 0x00;
+const Q_IFACE: u8 = 0x01;
+const Q_CMDMAP: u8 = 0x02;
+const Q_PGMNAME: u8 = 0x03;
+const Q_SERBUF: u8 = 0x04;
+const Q_BUSTYPE: u8 = 0x05;
+const Q_WRNMAXLEN: u8 = 0x08;
+const SYNCNOP: u8 = 0x10;
+const Q_RDNMAXLEN: u8 = 0x11;
+const S_BUSTYPE: u8 = 0x12;
+const O_SPIOP: u8 = 0x13;
+const S_SPI_FREQ: u8 = 0x14;
+const S_PIN_STATE: u8 = 0x15;
+
+const COMMANDS: [u8; 13] = [
+    NOP,
+    Q_IFACE,
+    Q_CMDMAP,
+    Q_PGMNAME,
+    Q_SERBUF,
+    Q_BUSTYPE,
+    Q_WRNMAXLEN,
+    SYNCNOP,
+    Q_RDNMAXLEN,
+    S_BUSTYPE,
+    O_SPIOP,
+    S_SPI_FREQ,
+    S_PIN_STATE,
+];
+
+const BUS_SPI: u8 = 1 << 3;
+
+/// flashrom prints it as the programmer's name: 16 bytes, which it terminates itself.
+const NAME: &[u8; 16] = b"backpack-serprog";
+
+/// The DMA buffers an operation goes through, a piece at a time, with CS held low across
+/// the pieces: flashrom's longest, a whole-chip read, never has to fit in memory.
+const CHUNK: usize = 4096;
+
+/// Answers this short go out in one segment with their ACK.
+const SHORT_ANSWER: usize = 64;
+
+const DEFAULT_HZ: u32 = 8_000_000;
+/// Full-duplex SPI through the GPIO matrix tops out near 26 MHz, and clip leads well before.
+const FASTEST_HZ: u32 = 20_000_000;
+const SLOWEST_HZ: u32 = 100_000;
+/// The SPI clock is this divided by a whole number, so every frequency offered is one.
+const SPI_SOURCE_HZ: u32 = 80_000_000;
+
+/// A flash is ready well within a millisecond of power-on; this also covers the VCC
+/// switch's own rise.
+const POWER_UP: Duration = Duration::from_millis(10);
+
+/// flashrom talks the whole time it runs; a client quiet this long is gone.
+const IDLE_LIMIT: Duration = Duration::from_secs(30);
+
+const STACK: usize = 5 * 1024;
+
+/// The clip's VCC switch is on when its pin is high.
+const VCC_ON: u32 = 1;
+const VCC_OFF: u32 = 0;
+
+const HOST: sys::spi_host_device_t = sys::spi_host_device_t_SPI2_HOST;
+
+/// The clip's GPIOs. MOSI is the camera's boot pin.
+#[derive(Clone, Copy)]
+pub struct Pins {
+    pub cs: i32,
+    pub clk: i32,
+    pub miso: i32,
+    pub mosi: i32,
+    pub vcc: i32,
+}
+
+static PINS: OnceLock<Pins> = OnceLock::new();
+
+/// The clip's GPIOs, once the programmer is started.
+pub fn pins() -> Option<Pins> {
+    PINS.get().copied()
+}
+
+/// Takes the clip's pins, leaves them high-Z and the VCC off, and serves flashrom on
+/// [`PORT`].
+pub fn start(
+    cs: impl OutputPin + 'static,
+    clk: impl OutputPin + 'static,
+    miso: impl InputPin + 'static,
+    vcc: impl OutputPin + 'static,
+    camera: Arc<Camera>,
+) -> Result<(), String> {
+    let pins = Pins {
+        cs: i32::from(cs.pin()),
+        clk: i32::from(clk.pin()),
+        miso: i32::from(miso.pin()),
+        mosi: camera.pins().1,
+        vcc: i32::from(vcc.pin()),
+    };
+    let failed = |err: EspError| format!("flash programmer: {err}");
+    // The switch's level goes in before its pin becomes an output, so the clip is never
+    // powered for an instant at boot.
+    camera::configure(pins.vcc, sys::gpio_mode_t_GPIO_MODE_OUTPUT, VCC_OFF).map_err(failed)?;
+    for pin in [pins.cs, pins.clk, pins.miso] {
+        release(pin).map_err(failed)?;
+    }
+    let listener = TcpListener::bind((Ipv6Addr::UNSPECIFIED, PORT)).map_err(|err| format!("flash programmer: {err}"))?;
+    let _ = PINS.set(pins);
+    info!(
+        "serprog: flashrom on port {PORT}; clip CS GPIO{}, CLK GPIO{}, MISO GPIO{}, MOSI GPIO{}, VCC GPIO{}",
+        pins.cs, pins.clk, pins.miso, pins.mosi, pins.vcc
+    );
+    crate::spawn_named(c"serprog", STACK, move || serve(&listener, &pins, &camera))
+        .map_err(|err| format!("flash programmer: {err}"))
+}
+
+/// One flashrom at a time: another waits in the listen backlog until the first is done.
+fn serve(listener: &TcpListener, pins: &Pins, camera: &Camera) {
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else {
+            continue;
+        };
+        let peer = stream.peer_addr().map_or_else(|_| "a client".into(), |peer| peer.to_string());
+        info!("serprog: {peer} connected");
+        let mut session = Session {
+            pins,
+            camera,
+            hz: DEFAULT_HZ,
+            bus: None,
+        };
+        // flashrom waits on every answer, so each one goes out at once.
+        let ended = stream
+            .set_nodelay(true)
+            .and_then(|()| stream.set_read_timeout(Some(IDLE_LIMIT)))
+            .and_then(|()| session.run(&mut stream));
+        // Before anything else: the pins go back to high-Z and the VCC off.
+        drop(session);
+        match ended {
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => info!("serprog: {peer} left"),
+            Err(err) => info!("serprog: {peer} left: {err}"),
+            Ok(()) => {}
+        }
+    }
+}
+
+struct Session<'a> {
+    pins: &'a Pins,
+    camera: &'a Camera,
+    hz: u32,
+    /// Present while flashrom has the pins enabled.
+    bus: Option<Bus<'a>>,
+}
+
+impl Session<'_> {
+    /// Answers commands until the client leaves or goes quiet, which is always an error.
+    fn run(&mut self, stream: &mut TcpStream) -> io::Result<()> {
+        loop {
+            match byte(stream)? {
+                NOP => stream.write_all(&[ACK])?,
+                Q_IFACE => stream.write_all(&[ACK, 1, 0])?,
+                Q_CMDMAP => {
+                    let mut answer = [0_u8; 33];
+                    answer[0] = ACK;
+                    for command in COMMANDS {
+                        answer[1 + usize::from(command / 8)] |= 1 << (command % 8);
+                    }
+                    stream.write_all(&answer)?;
+                }
+                Q_PGMNAME => {
+                    let mut answer = [0_u8; 17];
+                    answer[0] = ACK;
+                    answer[1..].copy_from_slice(NAME);
+                    stream.write_all(&answer)?;
+                }
+                // TCP is the flow control.
+                Q_SERBUF => stream.write_all(&[ACK, 0xFF, 0xFF])?,
+                Q_BUSTYPE => stream.write_all(&[ACK, BUS_SPI])?,
+                // 0 is 2^24: an operation of any length streams through the chunks.
+                Q_WRNMAXLEN | Q_RDNMAXLEN => stream.write_all(&[ACK, 0, 0, 0])?,
+                SYNCNOP => stream.write_all(&[NAK, ACK])?,
+                S_BUSTYPE => {
+                    // More than one bit leaves the choice to the programmer, and SPI is all
+                    // it has.
+                    let buses = byte(stream)?;
+                    stream.write_all(&[if buses & BUS_SPI == 0 { NAK } else { ACK }])?;
+                }
+                O_SPIOP => self.spi_op(stream)?,
+                S_SPI_FREQ => {
+                    let mut wanted = [0_u8; 4];
+                    stream.read_exact(&mut wanted)?;
+                    match self.set_hz(u32::from_le_bytes(wanted)) {
+                        Some(hz) => {
+                            let hz = hz.to_le_bytes();
+                            stream.write_all(&[ACK, hz[0], hz[1], hz[2], hz[3]])?;
+                        }
+                        None => stream.write_all(&[NAK])?,
+                    }
+                }
+                S_PIN_STATE => {
+                    let enable = byte(stream)? != 0;
+                    let answer = self.pin_state(enable);
+                    stream.write_all(&[answer])?;
+                }
+                // flashrom sends only what the command map offers; anything else has
+                // parameters of a length nobody here knows.
+                _ => stream.write_all(&[NAK])?,
+            }
+        }
+    }
+
+    /// The fastest frequency at or below `wanted` that the SPI clock divides down to, within
+    /// what clip leads allow; `None` for 0, which the protocol reserves.
+    fn set_hz(&mut self, wanted: u32) -> Option<u32> {
+        if wanted == 0 {
+            return None;
+        }
+        let wanted = wanted.clamp(SLOWEST_HZ, FASTEST_HZ);
+        let hz = SPI_SOURCE_HZ / SPI_SOURCE_HZ.div_ceil(wanted);
+        if let Some(bus) = self.bus.as_mut() {
+            if let Err(err) = bus.set_hz(hz) {
+                warn!("serprog: SPI clock {hz} Hz: {err}");
+                return None;
+            }
+        }
+        self.hz = hz;
+        Some(hz)
+    }
+
+    fn pin_state(&mut self, enable: bool) -> u8 {
+        if !enable {
+            self.bus = None;
+            return ACK;
+        }
+        if self.bus.is_none() {
+            match Bus::enable(self.pins, self.camera, self.hz) {
+                Ok(bus) => {
+                    info!("serprog: clip powered and driven at {} kHz", self.hz / 1000);
+                    self.bus = Some(bus);
+                }
+                Err(why) => {
+                    warn!("serprog: not driving the clip: {why}");
+                    return NAK;
+                }
+            }
+        }
+        ACK
+    }
+
+    /// `O_SPIOP`: with CS low, the bytes flashrom sent, then as many read back.
+    fn spi_op(&mut self, stream: &mut TcpStream) -> io::Result<()> {
+        let mut lengths = [0_u8; 6];
+        stream.read_exact(&mut lengths)?;
+        let write = u24(&lengths[..3]);
+        let read = u24(&lengths[3..]);
+        let Some(bus) = self.bus.as_mut() else {
+            // The bytes are on the wire whatever the answer; they go, so the next command
+            // lines up.
+            discard(stream, write)?;
+            return stream.write_all(&[NAK]);
+        };
+        bus.select();
+        // What flashrom sends goes out as it arrives, and the answer follows all of it.
+        let mut failed = None;
+        let mut left = write;
+        while left > 0 {
+            let n = left.min(CHUNK);
+            stream.read_exact(bus.tx.slice(n))?;
+            if failed.is_none() {
+                failed = bus.transfer(n, false).err();
+            }
+            left -= n;
+        }
+        if let Some(err) = failed {
+            bus.deselect();
+            warn!("serprog: SPI write: {err}");
+            return stream.write_all(&[NAK]);
+        }
+        if read == 0 {
+            bus.deselect();
+            return stream.write_all(&[ACK]);
+        }
+        bus.tx.slice(read.min(CHUNK)).fill(0xFF);
+        if read <= SHORT_ANSWER {
+            let result = bus.transfer(read, true);
+            bus.deselect();
+            if let Err(err) = result {
+                warn!("serprog: SPI read: {err}");
+                return stream.write_all(&[NAK]);
+            }
+            let mut answer = [0_u8; 1 + SHORT_ANSWER];
+            answer[0] = ACK;
+            answer[1..=read].copy_from_slice(bus.rx.slice(read));
+            return stream.write_all(&answer[..=read]);
+        }
+        // Longer reads stream: the ACK first, then the flash's bytes as they come in.
+        stream.write_all(&[ACK])?;
+        let mut left = read;
+        while left > 0 {
+            let n = left.min(CHUNK);
+            if let Err(err) = bus.transfer(n, true) {
+                bus.deselect();
+                // Past the ACK, ending the session is the only way left to fail.
+                return Err(io::Error::other(format!("SPI read: {err}")));
+            }
+            stream.write_all(bus.rx.slice(n))?;
+            left -= n;
+        }
+        bus.deselect();
+        Ok(())
+    }
+}
+
+/// The SPI bus on the clip, powered, for as long as flashrom has the pins enabled.
+struct Bus<'a> {
+    pins: &'a Pins,
+    device: sys::spi_device_handle_t,
+    tx: Dma,
+    rx: Dma,
+    /// Last, so the camera takes the boot pin back after the bus has let go of it.
+    _lease: FlashLease<'a>,
+}
+
+impl<'a> Bus<'a> {
+    fn enable(pins: &'a Pins, camera: &'a Camera, hz: u32) -> Result<Self, String> {
+        let lease = camera.lend_flash()?;
+        let tx = Dma::new(CHUNK)?;
+        let rx = Dma::new(CHUNK)?;
+        // Power before signals: a pin driven into an unpowered flash feeds it through its
+        // input protection.
+        set(pins.vcc, VCC_ON);
+        thread::sleep(POWER_UP);
+        let started = start_bus(pins).and_then(|()| {
+            // CS is a GPIO of its own, deselected before it drives, so it can stay low
+            // across the pieces of one operation.
+            camera::configure(pins.cs, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1)?;
+            add_device(hz)
+        });
+        match started {
+            Ok(device) => Ok(Self {
+                pins,
+                device,
+                tx,
+                rx,
+                _lease: lease,
+            }),
+            Err(err) => {
+                stop_bus(pins);
+                set(pins.vcc, VCC_OFF);
+                Err(format!("SPI bus: {err}"))
+            }
+        }
+    }
+
+    fn set_hz(&mut self, hz: u32) -> Result<(), EspError> {
+        // SAFETY: the device is this bus's and has nothing in flight.
+        esp!(unsafe { sys::spi_bus_remove_device(self.device) })?;
+        self.device = add_device(hz)?;
+        Ok(())
+    }
+
+    fn select(&self) {
+        set(self.pins.cs, 0);
+    }
+
+    fn deselect(&self) {
+        set(self.pins.cs, 1);
+    }
+
+    /// One SPI transaction of `n` bytes out of `tx`, captured into `rx` when `read`.
+    fn transfer(&mut self, n: usize, read: bool) -> Result<(), EspError> {
+        // SAFETY: all-zero is a transaction with no flags and no buffers; the ones used are
+        // set below.
+        let mut transaction: sys::spi_transaction_t = unsafe { core::mem::zeroed() };
+        transaction.length = n * 8;
+        transaction.__bindgen_anon_1.tx_buffer = self.tx.ptr.cast_const().cast();
+        if read {
+            transaction.rxlength = n * 8;
+            transaction.__bindgen_anon_2.rx_buffer = self.rx.ptr.cast();
+        }
+        // SAFETY: both buffers are DMA memory of at least `n` bytes that outlive the call,
+        // which waits for the transaction to finish.
+        esp!(unsafe { sys::spi_device_transmit(self.device, &raw mut transaction) })
+    }
+}
+
+impl Drop for Bus<'_> {
+    fn drop(&mut self) {
+        // SAFETY: the device is this bus's and has nothing in flight.
+        unsafe { sys::spi_bus_remove_device(self.device) };
+        stop_bus(self.pins);
+        set(self.pins.vcc, VCC_OFF);
+        info!("serprog: clip released and unpowered");
+    }
+}
+
+fn start_bus(pins: &Pins) -> Result<(), EspError> {
+    // SAFETY: all-zero is valid for this plain C configuration; every field that matters is
+    // set below.
+    let mut config: sys::spi_bus_config_t = unsafe { core::mem::zeroed() };
+    config.__bindgen_anon_1.mosi_io_num = pins.mosi;
+    config.__bindgen_anon_2.miso_io_num = pins.miso;
+    config.sclk_io_num = pins.clk;
+    config.__bindgen_anon_3.quadwp_io_num = -1;
+    config.__bindgen_anon_4.quadhd_io_num = -1;
+    config.data4_io_num = -1;
+    config.data5_io_num = -1;
+    config.data6_io_num = -1;
+    config.data7_io_num = -1;
+    config.max_transfer_sz = i32::try_from(CHUNK).unwrap_or(i32::MAX);
+    // SAFETY: `config` outlives the call, which copies it.
+    esp!(unsafe { sys::spi_bus_initialize(HOST, &raw const config, sys::spi_common_dma_t_SPI_DMA_CH_AUTO) })
+}
+
+/// Frees the bus and leaves every clip pin high-Z, the boot pin included until the camera
+/// takes it back.
+fn stop_bus(pins: &Pins) {
+    // SAFETY: nothing else uses this host; with no bus it only returns an error.
+    unsafe { sys::spi_bus_free(HOST) };
+    for pin in [pins.cs, pins.clk, pins.miso, pins.mosi] {
+        if let Err(err) = release(pin) {
+            warn!("serprog: GPIO{pin}: {err}");
+        }
+    }
+}
+
+fn add_device(hz: u32) -> Result<sys::spi_device_handle_t, EspError> {
+    // SAFETY: all-zero is mode 0 with the default clock source and duty cycle; the rest is
+    // set below.
+    let mut config: sys::spi_device_interface_config_t = unsafe { core::mem::zeroed() };
+    config.clock_speed_hz = i32::try_from(hz).unwrap_or(i32::MAX);
+    config.spics_io_num = -1;
+    config.queue_size = 1;
+    let mut device = ptr::null_mut();
+    // SAFETY: `config` and `device` outlive the call, which copies the configuration.
+    esp!(unsafe { sys::spi_bus_add_device(HOST, &raw const config, &raw mut device) })?;
+    Ok(device)
+}
+
+/// An input with no pulls, driving nothing.
+fn release(pin: i32) -> Result<(), EspError> {
+    camera::configure(pin, sys::gpio_mode_t_GPIO_MODE_INPUT, 0)
+}
+
+fn set(pin: i32, level: u32) {
+    // SAFETY: the pin is configured as an output of this module's.
+    unsafe { sys::gpio_set_level(pin, level) };
+}
+
+/// A buffer the SPI DMA reaches: internal RAM, word-aligned.
+struct Dma {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl Dma {
+    fn new(len: usize) -> Result<Self, String> {
+        // SAFETY: a plain allocation; the result is checked below.
+        let ptr = unsafe { sys::heap_caps_aligned_alloc(4, len, sys::MALLOC_CAP_DMA | sys::MALLOC_CAP_INTERNAL) };
+        if ptr.is_null() {
+            return Err(format!("no {len} bytes of DMA memory"));
+        }
+        Ok(Self { ptr: ptr.cast(), len })
+    }
+
+    fn slice(&mut self, n: usize) -> &mut [u8] {
+        // SAFETY: the buffer is `len` bytes and this struct's alone.
+        unsafe { core::slice::from_raw_parts_mut(self.ptr, n.min(self.len)) }
+    }
+}
+
+impl Drop for Dma {
+    fn drop(&mut self) {
+        // SAFETY: allocated in `new` and not freed since.
+        unsafe { sys::heap_caps_free(self.ptr.cast()) };
+    }
+}
+
+fn byte(stream: &mut TcpStream) -> io::Result<u8> {
+    let mut byte = [0_u8; 1];
+    stream.read_exact(&mut byte)?;
+    Ok(byte[0])
+}
+
+fn u24(bytes: &[u8]) -> usize {
+    usize::from(bytes[0]) | usize::from(bytes[1]) << 8 | usize::from(bytes[2]) << 16
+}
+
+fn discard(stream: &mut TcpStream, mut count: usize) -> io::Result<()> {
+    let mut sink = [0_u8; 256];
+    while count > 0 {
+        let n = count.min(sink.len());
+        stream.read_exact(&mut sink[..n])?;
+        count -= n;
+    }
+    Ok(())
+}

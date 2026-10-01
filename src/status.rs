@@ -24,6 +24,7 @@ use tdfu_daemon::DEFAULT_PORT;
 
 use crate::camera::{self, Action, Camera};
 use crate::console;
+use crate::serprog;
 
 /// Forgets the saved network and restarts into the setup portal, answering what to tell the
 /// user.
@@ -176,6 +177,8 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 <p>The camera's serial console is on port {console}, raw, one client at a time (a new one takes over). Ctrl-] leaves:</p>
 <pre>socat -,rawer,escape=0x1d tcp:{name}.local:{console}</pre>
 <p>For tools that set the baud rate or send a break, RFC 2217 on port {rfc2217}: <code>rfc2217://{name}.local:{rfc2217}</code>. Its DTR holds the boot pin and RTS cuts the power, as esptool's auto-reset drives an ESP32's IO0 and EN; both or neither asserted, as a terminal opens, leaves the camera alone.</p>
+<p>The camera's flash chip, through a SOIC-8 clip, for flashrom 1.4.0 or later on port {serprog}, with the camera off:</p>
+<pre>flashrom -p serprog:ip={name}.local:{serprog} -r dump.bin</pre>
 <h2>Camera</h2>
 <p id="cam" class="dim">&nbsp;</p>
 <p class="buttons"><button data-a="power-cycle" title="Cut the camera's power for a second, then turn it back on">Power cycle</button> <button data-a="bootrom" title="Hold the boot pin through a power cycle, and let go once the bootrom shows up on USB">Enter bootrom</button> <button data-a="power-off" title="Cut the camera's power">Power off</button> <button data-a="power-on" title="Turn the camera's power on">Power on</button> <button data-a="boot-hold" title="Pull the camera's flash DI low, so its next power-on boots from USB">Hold boot pin</button> <button data-a="boot-release" title="Let go of the boot pin">Release boot pin</button></p>
@@ -184,11 +187,12 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 <h2>Wiring</h2>
 <table>
 <tr><td>GPIO{power}</td><td>camera power, through a MOSFET module (high: on)</td></tr>
-<tr><td>GPIO{boot}</td><td>camera flash DI, pin 5 of an SOIC-8 NOR; open-drain, pulled low to boot from USB</td></tr>
+<tr><td>GPIO{boot}</td><td>camera flash DI, pin 5 of an SOIC-8 NOR; open-drain, pulled low to boot from USB, and the flash programmer's MOSI</td></tr>
 <tr><td>GPIO{tx}</td><td>camera UART RX (the backpack's TX)</td></tr>
 <tr><td>GPIO{rx}</td><td>camera UART TX (the backpack's RX)</td></tr>
 <tr><td>{usb}</td><td>camera USB ({usb_port})</td></tr>
 <tr><td>GND</td><td>camera ground</td></tr>
+{clip}
 </table>
 {setup}
 {script}
@@ -207,6 +211,14 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
         boot = camera.1,
         tx = console::pins().0,
         rx = console::pins().1,
+        serprog = serprog::PORT,
+        clip = serprog::pins().map_or_else(String::new, |clip| format!(
+            "<tr><td>GPIO{}</td><td>flash CS, pin 1, through the clip</td></tr>\n\
+             <tr><td>GPIO{}</td><td>flash DO, pin 2</td></tr>\n\
+             <tr><td>GPIO{}</td><td>flash CLK, pin 6</td></tr>\n\
+             <tr><td>GPIO{}</td><td>the switch on the clip's VCC, to pin 8 (high: on)</td></tr>",
+            clip.cs, clip.miso, clip.clk, clip.vcc
+        )),
     )
 }
 
@@ -245,7 +257,8 @@ function show() {
   fetch('/api/camera').then((r) => r.json()).then((s) => {
     $('cam').textContent = 'Power ' + s.power + ', boot pin ' + s.boot_pin + ', ' + s.usb_devices + ' USB device(s)'
       + (s.stuck_s !== null ? ', a USB transfer unanswered for ' + s.stuck_s + ' s' : '')
-      + (s.recoveries ? ', ' + s.recoveries + ' recovery power cycle(s)' : '');
+      + (s.recoveries ? ', ' + s.recoveries + ' recovery power cycle(s)' : '')
+      + (s.flash_lent ? ', flash chip lent to flashrom' : '');
   }).catch(() => { $('cam').textContent = 'The backpack did not answer.'; });
 }
 for (const b of document.querySelectorAll('button[data-a]')) {
@@ -262,12 +275,13 @@ setInterval(show, 3000);
 
 fn camera_json(status: &camera::Status) -> String {
     format!(
-        r#"{{"power":"{}","boot_pin":"{}","usb_devices":{},"stuck_s":{},"recoveries":{}}}"#,
+        r#"{{"power":"{}","boot_pin":"{}","usb_devices":{},"stuck_s":{},"recoveries":{},"flash_lent":{}}}"#,
         if status.powered { "on" } else { "off" },
         if status.boot_held { "held" } else { "released" },
         status.enumerated,
         status.stuck_for.map_or_else(|| "null".to_owned(), |stuck| stuck.as_secs().to_string()),
         status.recoveries,
+        status.flash_lent,
     )
 }
 

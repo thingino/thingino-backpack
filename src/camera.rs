@@ -9,6 +9,9 @@
 //! the pin, cycle the power, let the pin go as soon as the bootrom enumerates, since U-Boot
 //! needs the flash), and recovery, which power-cycles a camera that stopped serving USB
 //! without leaving the bus or that the port cannot get enumerated.
+//!
+//! The flash programmer borrows the flash chip, and with it the boot pin as its MOSI, only
+//! from a camera that is off; until it gives them back the camera stays off.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
@@ -96,6 +99,8 @@ struct State {
     /// What the lines hold asserted.
     lines_off: bool,
     lines_boot: bool,
+    /// The flash programmer has the flash chip and the boot pin.
+    flash_lent: bool,
 }
 
 impl State {
@@ -138,6 +143,19 @@ pub struct Status {
     pub enumerated: usize,
     pub stuck_for: Option<Duration>,
     pub recoveries: u32,
+    pub flash_lent: bool,
+}
+
+/// The flash chip, lent to the flash programmer: the camera stays off, and the boot pin is
+/// the programmer's, until this is dropped.
+pub struct FlashLease<'a> {
+    camera: &'a Camera,
+}
+
+impl Drop for FlashLease<'_> {
+    fn drop(&mut self) {
+        self.camera.return_flash();
+    }
 }
 
 type Request = (Action, SyncSender<Result<String, String>>);
@@ -181,6 +199,7 @@ pub fn start(power: impl OutputPin + 'static, boot: impl OutputPin + 'static, ho
             lines_applied: (false, false),
             lines_off: false,
             lines_boot: false,
+            flash_lent: false,
         }),
         host,
         requests,
@@ -196,7 +215,7 @@ pub fn start(power: impl OutputPin + 'static, boot: impl OutputPin + 'static, ho
     clippy::field_reassign_with_default,
     reason = "the P4's configuration has a field the S2's and S3's lack, so no one struct literal fits all three"
 )]
-fn configure(pin: i32, mode: sys::gpio_mode_t, level: u32) -> Result<(), sys::EspError> {
+pub(crate) fn configure(pin: i32, mode: sys::gpio_mode_t, level: u32) -> Result<(), sys::EspError> {
     // SAFETY: the pin number comes from a peripheral this module took ownership of.
     esp!(unsafe { sys::gpio_set_level(pin, level) })?;
     let mut config = sys::gpio_config_t::default();
@@ -220,9 +239,9 @@ impl Camera {
     }
 
     pub fn status(&self) -> Status {
-        let (powered, boot_held) = {
+        let (powered, boot_held, flash_lent) = {
             let state = self.state();
-            (state.powered, state.boot_held)
+            (state.powered, state.boot_held, state.flash_lent)
         };
         Status {
             powered,
@@ -230,7 +249,54 @@ impl Camera {
             enumerated: self.host.enumerated().len(),
             stuck_for: self.host.stuck_for(),
             recoveries: self.recoveries.load(Ordering::Relaxed),
+            flash_lent,
         }
+    }
+
+    /// Lends the flash chip to the flash programmer, if the camera is off: its power
+    /// switch off, nothing of it on the USB bus, and its UART TX not held high, which an idle
+    /// UART does whenever the camera has power. The last two catch a switch that is not
+    /// cutting the supply.
+    pub fn lend_flash(&self) -> Result<FlashLease<'_>, String> {
+        {
+            let mut state = self.state();
+            if state.flash_lent {
+                return Err("the flash chip is already lent".into());
+            }
+            if state.powered {
+                return Err("the camera is on; switch it off first".into());
+            }
+            if state.boot_held || state.boot_watch.is_some() {
+                return Err("the boot pin is held".into());
+            }
+            // From here the camera refuses power, so it cannot come on during the checks.
+            state.flash_lent = true;
+        }
+        let checked = if !self.host.enumerated().is_empty() {
+            Err("the camera is on the USB bus, so it still has power")
+        } else if console::camera_tx_high() {
+            Err("the camera's UART TX is high, so it still has power")
+        } else {
+            Ok(())
+        };
+        if let Err(why) = checked {
+            self.state().flash_lent = false;
+            return Err(why.into());
+        }
+        info!("camera: flash chip lent to the flash programmer");
+        Ok(FlashLease { camera: self })
+    }
+
+    fn return_flash(&self) {
+        let mut state = self.state();
+        // The SPI bus had the boot pin: back to open-drain and released, as `start` left it.
+        if let Err(err) = configure(self.pins.boot, sys::gpio_mode_t_GPIO_MODE_OUTPUT_OD, 1) {
+            warn!("camera: boot pin: {err}");
+        }
+        // SAFETY: the pin is configured just above.
+        unsafe { sys::gpio_set_drive_capability(self.pins.boot, sys::gpio_drive_cap_t_GPIO_DRIVE_CAP_3) };
+        state.flash_lent = false;
+        info!("camera: flash chip back from the flash programmer");
     }
 
     /// Runs `action` on the camera thread and answers what came of it.
@@ -257,6 +323,10 @@ impl Camera {
     }
 
     fn act(&self, action: Action) -> Result<String, String> {
+        if action != Action::PowerOff && self.state().flash_lent {
+            return Err("the flash chip is lent to the flash programmer, and the camera stays off until flashrom is done"
+                .into());
+        }
         match action {
             Action::PowerOn => {
                 self.state().power(&self.pins, true);
@@ -338,7 +408,8 @@ impl Camera {
     fn housekeeping(&self) {
         let now = Instant::now();
         let mut state = self.state();
-        if state.lines != state.lines_applied && state.lines_since.elapsed() >= LINES_SETTLE {
+        // Lines set while the flash is lent act once it is back.
+        if !state.flash_lent && state.lines != state.lines_applied && state.lines_since.elapsed() >= LINES_SETTLE {
             let (dtr, rts) = state.lines;
             state.lines_applied = (dtr, rts);
             let (off, boot) = (rts && !dtr, dtr && !rts);

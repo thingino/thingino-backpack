@@ -33,6 +33,7 @@ mod eth;
 #[cfg(not(esp32p4))]
 mod portal;
 mod rfc2217;
+mod serprog;
 mod status;
 #[cfg(not(esp32p4))]
 mod wifi;
@@ -107,9 +108,21 @@ fn run() -> Result<(), String> {
     #[cfg(esp32p4)]
     let (power, boot, tx, rx) =
         (peripherals.pins.gpio20, peripherals.pins.gpio21, peripherals.pins.gpio22, peripherals.pins.gpio23);
+    // The clip on the camera's flash chip for flashrom: CS, CLK, MISO and the switch on its
+    // VCC. MOSI is the boot pin, on the flash's DI already. The P4's are placeholders too.
+    #[cfg(not(esp32p4))]
+    let (cs, clk, miso, vcc) =
+        (peripherals.pins.gpio10, peripherals.pins.gpio12, peripherals.pins.gpio13, peripherals.pins.gpio14);
+    #[cfg(esp32p4)]
+    let (cs, clk, miso, vcc) =
+        (peripherals.pins.gpio45, peripherals.pins.gpio46, peripherals.pins.gpio47, peripherals.pins.gpio48);
     let host = UsbHost::install().map_err(|err| err.to_string())?;
     let camera = camera::start(power, boot, host.clone())?;
     console::start(peripherals.uart1, tx, rx, Arc::clone(&camera))?;
+    // The rest of the unit works without it.
+    if let Err(err) = serprog::start(cs, clk, miso, vcc, Arc::clone(&camera)) {
+        error!("{err}");
+    }
     // Findable as a camera is: the app's hub lists it and opens the page on port 80.
     let status = status::start(&hostname, camera, reset)?;
     memory_report("after the network and USB host");
