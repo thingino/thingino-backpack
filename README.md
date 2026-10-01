@@ -48,6 +48,7 @@ images stream through it, so the default build runs without PSRAM.
 |-----------------|---------------------------|--------------------------------------------------------------------------|
 | GPIO4           | GPIO20                    | Power switch (a MOSFET module or similar): high = camera on              |
 | GPIO9           | GPIO21                    | Flash DI, pin 5 of an SOIC-8 NOR flash (open-drain: low = boot from USB) |
+| GPIO6           | GPIO48                    | SoC BOOTSEL, on boards that bring it out (see below)                     |
 | GPIO1 (TX)      | GPIO22 (TX)               | UART RX                                                                  |
 | GPIO2 (RX)      | GPIO23 (RX)               | UART TX                                                                  |
 | GPIO19, GPIO20  | the high-speed port's own | USB D-, D+                                                               |
@@ -78,6 +79,12 @@ images stream through it, so the default build runs without PSRAM.
   Pulled low through a power-on, it keeps the bootrom from reading the SPL, and the bootrom
   falls back to USB boot. Its level is set before it becomes an output, so it cannot glitch
   the flash of a running camera when the ESP32 boots.
+- BOOTSEL is for boards that bring out the SoC's boot select, rather than relying on the
+  flash's DI: it moves with the boot pin, so whichever of the two is wired does the job. It
+  is pulled low by default, open-drain as the boot pin; it can be set to driven high on the
+  status page, or with `curl -X POST 'http://<host>.local/api/camera?bootsel=high'`. Driven
+  high, it is only driven while the unit has the camera's power switched on, since a pin
+  driven into an unpowered SoC feeds it; a camera powered from elsewhere counts as on.
 - The power switch should switch the supply's + side. The camera's ground also reaches the
   ESP32 through the USB cable and the UART ground, so a switch on the ground side can be
   bypassed.
@@ -247,7 +254,8 @@ the DFU gadget without anyone touching it.
 
 Answers are JSON: `{"ok":true,"message":...}` or `{"ok":false,"error":...}`. `GET
 /api/camera` reports the power, the boot pin, the USB devices enumerated, how long a USB
-transfer has gone unanswered, and the power cycles done for recovery.
+transfer has gone unanswered, the power cycles done for recovery, and BOOTSEL's sense;
+`POST /api/camera?bootsel=low` or `high` sets the last, saved across restarts.
 
 ### Flash chip
 

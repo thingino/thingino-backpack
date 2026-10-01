@@ -18,7 +18,6 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::io::vfs::MountedEventfs;
-#[cfg(not(esp32p4))]
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys;
 use log::{error, info};
@@ -89,12 +88,12 @@ fn run() -> Result<(), String> {
     // A new firmware's first boot: it has to reach the network, or it is rolled back. The
     // setup portal is no network, so a firmware that ends up there goes back too.
     ota::confirm_when_reachable(|| !status::endpoints().is_empty());
+    let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
     #[cfg(not(esp32p4))]
     let (network, hostname, settings) = {
-        let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
         let Some(saved) = wifi::saved(&nvs)? else {
             // Nothing to join: the portal is all this boot does, until it is given a network.
-            return portal::run(peripherals.modem, sysloop, nvs).map(|never| match never {});
+            return portal::run(peripherals.modem, sysloop, nvs.clone()).map(|never| match never {});
         };
         let hostname = saved.hostname.clone();
         let (forget, store) = (nvs.clone(), nvs.clone());
@@ -108,7 +107,7 @@ fn run() -> Result<(), String> {
             tx_power: wifi::tx_power,
             browned_out: wifi::browned_out(),
         };
-        (wifi::join(peripherals.modem, sysloop, nvs, saved)?, hostname, Some(settings))
+        (wifi::join(peripherals.modem, sysloop, nvs.clone(), saved)?, hostname, Some(settings))
     };
     // Ethernet has nothing to set up.
     #[cfg(esp32p4)]
@@ -127,6 +126,11 @@ fn run() -> Result<(), String> {
     #[cfg(esp32p4)]
     let (power, boot, tx, rx) =
         (peripherals.pins.gpio20, peripherals.pins.gpio21, peripherals.pins.gpio22, peripherals.pins.gpio23);
+    // The SoC's boot select, on boards that bring it out instead of using the flash's DI.
+    #[cfg(not(esp32p4))]
+    let bootsel = peripherals.pins.gpio6;
+    #[cfg(esp32p4)]
+    let bootsel = peripherals.pins.gpio48;
     // The clip on the camera's flash chip for flashrom: CS, CLK and MISO. MOSI is the boot
     // pin, on the flash's DI already, and VCC the 3.3 V pin. The P4's are placeholders too.
     #[cfg(not(esp32p4))]
@@ -134,7 +138,7 @@ fn run() -> Result<(), String> {
     #[cfg(esp32p4)]
     let (cs, clk, miso) = (peripherals.pins.gpio45, peripherals.pins.gpio46, peripherals.pins.gpio47);
     let host = UsbHost::install().map_err(|err| err.to_string())?;
-    let camera = camera::start(power, boot, host.clone())?;
+    let camera = camera::start(power, boot, bootsel, host.clone(), nvs)?;
     console::start(peripherals.uart1, tx, rx, Arc::clone(&camera))?;
     // The rest of the unit works without it.
     if let Err(err) = serprog::start(cs, clk, miso, Arc::clone(&camera)) {

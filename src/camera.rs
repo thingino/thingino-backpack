@@ -1,9 +1,14 @@
-//! The camera's power and boot pin.
+//! The camera's power and boot pins.
 //!
 //! The power pin switches the camera's supply through a MOSFET module, high for on. The boot
 //! pin goes to the camera's flash pin 5 and is open-drain, so it only ever pulls low or lets
 //! go: low holds the flash's data input at ground, the bootrom cannot read its SPL and falls
 //! back to USB boot; released, the flash works as before.
+//!
+//! BOOTSEL is for boards that bring out the SoC's boot select instead: it moves with the boot
+//! pin, so whichever of the two a board has wired does the job. Its sense is a setting,
+//! saved in NVS: pulled low (open-drain, as the boot pin), or driven high, which it only is
+//! while the camera has power, as a driven pin into an unpowered SoC feeds it.
 //!
 //! What takes time runs on a thread of its own: power cycles, entering the bootrom (hold
 //! the pin, cycle the power, let the pin go as soon as the bootrom enumerates, since U-Boot
@@ -21,6 +26,7 @@ use std::thread;
 use std::time::Instant;
 
 use esp_idf_svc::hal::gpio::OutputPin;
+use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 use esp_idf_svc::sys::{self, esp};
 use log::{info, warn};
 use tdfu_usb::espidf::UsbHost;
@@ -51,6 +57,10 @@ const TICK: Duration = Duration::from_millis(100);
 const RECOVERY_EVERY: Duration = Duration::from_millis(500);
 const ANSWER_WITHIN: Duration = Duration::from_secs(20);
 
+/// Where the BOOTSEL setting is kept: 1 for driven high, anything else for pulled low.
+const NAMESPACE: &str = "camera";
+const BOOTSEL_HIGH: &str = "bootsel_high";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     PowerOn,
@@ -80,6 +90,7 @@ impl Action {
 struct Pins {
     power: i32,
     boot: i32,
+    bootsel: i32,
 }
 
 struct State {
@@ -101,17 +112,27 @@ struct State {
     lines_boot: bool,
     /// The flash programmer has the flash chip and the boot pin.
     flash_lent: bool,
+    /// BOOTSEL is driven high to boot from USB, rather than pulled low.
+    bootsel_high: bool,
 }
 
 impl State {
     fn power(&mut self, pins: &Pins, on: bool) {
+        let was = self.powered;
+        if !on {
+            // A BOOTSEL driven high lets go before the supply does.
+            self.powered = false;
+            self.bootsel(pins);
+        }
         // SAFETY: the pin was configured as an output in `start` and nothing else drives it.
         unsafe { sys::gpio_set_level(pins.power, u32::from(on)) };
-        if self.powered != on {
+        if was != on {
             info!("camera: power {}", if on { "on" } else { "off" });
         }
         self.powered = on;
         if on {
+            // At once: the SoC reads its boot select as it comes out of reset.
+            self.bootsel(pins);
             self.tx_at = Some(Instant::now() + TX_AFTER);
             if self.boot_held {
                 self.boot_watch = Some(Instant::now());
@@ -134,6 +155,22 @@ impl State {
         if !held {
             self.boot_watch = None;
         }
+        self.bootsel(pins);
+    }
+
+    /// Puts BOOTSEL where the boot pin, the power and the setting say: pulled low or let go,
+    /// or driven high only while held with the camera powered, and let go otherwise.
+    fn bootsel(&self, pins: &Pins) {
+        let set = if !self.bootsel_high {
+            configure(pins.bootsel, sys::gpio_mode_t_GPIO_MODE_OUTPUT_OD, u32::from(!self.boot_held))
+        } else if self.boot_held && self.powered {
+            configure(pins.bootsel, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1)
+        } else {
+            configure(pins.bootsel, sys::gpio_mode_t_GPIO_MODE_INPUT, 0)
+        };
+        if let Err(err) = set {
+            warn!("camera: BOOTSEL: {err}");
+        }
     }
 }
 
@@ -144,6 +181,7 @@ pub struct Status {
     pub stuck_for: Option<Duration>,
     pub recoveries: u32,
     pub flash_lent: bool,
+    pub bootsel_high: bool,
 }
 
 /// The flash chip, lent to the flash programmer: the camera stays off, and the boot pin is
@@ -166,15 +204,29 @@ pub struct Camera {
     host: UsbHost,
     requests: Sender<Request>,
     recoveries: AtomicU32,
+    nvs: EspDefaultNvsPartition,
 }
 
-/// Takes the two pins, powers the camera and starts the thread that runs requests and
+/// Takes the three pins, powers the camera and starts the thread that runs requests and
 /// recovery. The camera powered off while the ESP32 was in reset, so this is a power-on.
-pub fn start(power: impl OutputPin + 'static, boot: impl OutputPin + 'static, host: UsbHost) -> Result<Arc<Camera>, String> {
+pub fn start(
+    power: impl OutputPin + 'static,
+    boot: impl OutputPin + 'static,
+    bootsel: impl OutputPin + 'static,
+    host: UsbHost,
+    nvs: EspDefaultNvsPartition,
+) -> Result<Arc<Camera>, String> {
     let pins = Pins {
         power: i32::from(power.pin()),
         boot: i32::from(boot.pin()),
+        bootsel: i32::from(bootsel.pin()),
     };
+    // Starting matters more than the setting.
+    let saved = EspNvs::new(nvs.clone(), NAMESPACE, true).and_then(|store| store.get_u8(BOOTSEL_HIGH));
+    let bootsel_high = saved.unwrap_or_else(|err| {
+        warn!("camera: reading the BOOTSEL setting: {err}");
+        None
+    }) == Some(1);
     // The level goes in before the pin becomes an output, so the boot pin never pulls the
     // flash low for an instant while the camera may be using it.
     configure(pins.boot, sys::gpio_mode_t_GPIO_MODE_OUTPUT_OD, 1).map_err(|err| format!("boot pin: {err}"))?;
@@ -183,7 +235,13 @@ pub fn start(power: impl OutputPin + 'static, boot: impl OutputPin + 'static, ho
     esp!(unsafe { sys::gpio_set_drive_capability(pins.boot, sys::gpio_drive_cap_t_GPIO_DRIVE_CAP_3) })
         .map_err(|err| format!("boot pin: {err}"))?;
     configure(pins.power, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1).map_err(|err| format!("power pin: {err}"))?;
-    info!("camera: power on GPIO{}, boot pin on GPIO{}", pins.power, pins.boot);
+    info!(
+        "camera: power on GPIO{}, boot pin on GPIO{}, BOOTSEL on GPIO{} ({})",
+        pins.power,
+        pins.boot,
+        pins.bootsel,
+        bootsel_name(bootsel_high)
+    );
 
     let (requests, received) = mpsc::channel();
     let camera = Arc::new(Camera {
@@ -200,11 +258,15 @@ pub fn start(power: impl OutputPin + 'static, boot: impl OutputPin + 'static, ho
             lines_off: false,
             lines_boot: false,
             flash_lent: false,
+            bootsel_high,
         }),
         host,
         requests,
         recoveries: AtomicU32::new(0),
+        nvs,
     });
+    // Released, whichever its sense.
+    camera.state().bootsel(&camera.pins);
     let supervisor = Arc::clone(&camera);
     crate::spawn_named(c"camera", 4096, move || supervise(&supervisor, &received))
         .map_err(|err| format!("camera: {err}"))?;
@@ -233,15 +295,15 @@ impl Camera {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The power and boot pin GPIOs.
-    pub fn pins(&self) -> (i32, i32) {
-        (self.pins.power, self.pins.boot)
+    /// The power, boot pin and BOOTSEL GPIOs.
+    pub fn pins(&self) -> (i32, i32, i32) {
+        (self.pins.power, self.pins.boot, self.pins.bootsel)
     }
 
     pub fn status(&self) -> Status {
-        let (powered, boot_held, flash_lent) = {
+        let (powered, boot_held, flash_lent, bootsel_high) = {
             let state = self.state();
-            (state.powered, state.boot_held, state.flash_lent)
+            (state.powered, state.boot_held, state.flash_lent, state.bootsel_high)
         };
         Status {
             powered,
@@ -250,7 +312,20 @@ impl Camera {
             stuck_for: self.host.stuck_for(),
             recoveries: self.recoveries.load(Ordering::Relaxed),
             flash_lent,
+            bootsel_high,
         }
+    }
+
+    /// Sets BOOTSEL's sense, at once and for every boot after, answering what to tell the
+    /// user.
+    pub fn set_bootsel(&self, high: bool) -> Result<String, String> {
+        let store = EspNvs::new(self.nvs.clone(), NAMESPACE, true).map_err(|err| format!("opening NVS: {err}"))?;
+        store.set_u8(BOOTSEL_HIGH, u8::from(high)).map_err(|err| err.to_string())?;
+        let mut state = self.state();
+        state.bootsel_high = high;
+        state.bootsel(&self.pins);
+        info!("camera: BOOTSEL {}", bootsel_name(high));
+        Ok(format!("BOOTSEL {}", bootsel_name(high)))
     }
 
     /// Lends the flash chip to the flash programmer, if the camera is off: its power
@@ -447,6 +522,11 @@ impl Camera {
             }
         }
     }
+}
+
+/// What BOOTSEL does to boot from USB.
+fn bootsel_name(high: bool) -> &'static str {
+    if high { "driven high to boot from USB" } else { "pulled low to boot from USB" }
 }
 
 fn supervise(camera: &Camera, requests: &Receiver<Request>) {
