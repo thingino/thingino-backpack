@@ -5,6 +5,10 @@
 //! backend. `thingino-dfu --host <backpack>` and the browser flasher's remote mode talk to it
 //! unchanged.
 
+// ldproxy, the ESP targets' linker wrapper, always says "Running ldproxy" on stderr, which
+// rustc would turn into a warning on every build.
+#![allow(linker_messages)]
+
 use core::sync::atomic::{AtomicPtr, Ordering};
 use core::time::Duration;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
