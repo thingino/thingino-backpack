@@ -103,8 +103,11 @@ const SPI_SOURCE_HZ: u32 = 80_000_000;
 const POWER_UP: Duration = Duration::from_millis(10);
 
 /// On a board, VCC charges the board's capacitors too, and the chip answers 00s until they
-/// are; flashrom asked for one chip probes it once, right away.
-const READY_WITHIN: Duration = Duration::from_millis(500);
+/// are; a SoC on the same rail can then wake and take the flash's pins for a while. flashrom
+/// asked for one chip probes it once, right away, so the chip is handed over once its ID has
+/// read back the same for [`STEADY_FOR`], within [`READY_WITHIN`].
+const READY_WITHIN: Duration = Duration::from_secs(5);
+const STEADY_FOR: Duration = Duration::from_secs(1);
 
 /// JEDEC Read Identification, which every flash this is for answers once it is up.
 const RDID: u8 = 0x9F;
@@ -491,12 +494,12 @@ impl<'a> Bus<'a> {
         set(self.pins.cs, 1);
     }
 
-    /// Waits until the chip gives the same ID twice, or [`READY_WITHIN`] passes; a chip that
-    /// never does is flashrom's to report.
+    /// Waits until the chip has given the same ID for [`STEADY_FOR`], or [`READY_WITHIN`]
+    /// passes; a chip that never does is flashrom's to report.
     fn wait_ready(&mut self) {
-        let deadline = Instant::now() + READY_WITHIN;
-        let mut last = None;
-        while Instant::now() < deadline {
+        let start = Instant::now();
+        let mut steady: Option<([u8; 3], Instant)> = None;
+        while start.elapsed() < READY_WITHIN {
             self.tx.slice(4).copy_from_slice(&[RDID, 0xFF, 0xFF, 0xFF]);
             self.select();
             let result = self.transfer(4, true);
@@ -507,13 +510,17 @@ impl<'a> Bus<'a> {
             let rx = self.rx.slice(4);
             let id = [rx[1], rx[2], rx[3]];
             let valid = id != [0; 3] && id != [0xFF; 3];
-            if valid && last == Some(id) {
-                return;
+            match steady {
+                Some((was, since)) if valid && was == id => {
+                    if since.elapsed() >= STEADY_FOR {
+                        return;
+                    }
+                }
+                _ => steady = valid.then(|| (id, Instant::now())),
             }
-            last = valid.then_some(id);
             thread::sleep(Duration::from_millis(1));
         }
-        warn!("serprog: no flash answered within {} ms", READY_WITHIN.as_millis());
+        warn!("serprog: no flash answered steadily within {} ms", READY_WITHIN.as_millis());
     }
 
     /// One SPI transaction of `n` bytes out of `tx`, captured into `rx` when `read`.
