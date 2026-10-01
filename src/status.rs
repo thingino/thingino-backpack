@@ -4,8 +4,9 @@
 //! entry is tapped. The page says how to reach the dfu-remote daemon and the console, and
 //! drives the camera's power and boot pin through `/api/camera`:
 //!
-//! * `GET /api/camera`: power, boot pin, USB devices enumerated, how long a USB transfer
-//!   has gone unanswered, power cycles done for recovery, and BOOTSEL's sense, as JSON.
+//! * `GET /api/camera`: power, boot pin, USB devices enumerated and their VID:PID, how
+//!   long a USB transfer has gone unanswered, power cycles done for recovery, and BOOTSEL's
+//!   sense, as JSON.
 //! * `POST /api/camera?action=<action>`: one of [`Action::NAMES`]; answers
 //!   `{"ok":true,"message":...}` or `{"ok":false,"error":...}`.
 //! * `POST /api/camera?bootsel=low` or `high`: what BOOTSEL does to boot from USB, now and
@@ -436,6 +437,7 @@ function show() {
     // Once, so a choice being made is not undone.
     if (!bootselShown) { $('bootsel').value = s.bootsel; bootselShown = true; }
     $('cam').textContent = 'Power ' + s.power + ', boot pin ' + s.boot_pin + ', ' + s.usb_devices + ' USB device(s)'
+      + (s.usb.length ? ' (' + s.usb.join(', ') + ')' : '')
       + (s.stuck_s !== null ? ', a USB transfer unanswered for ' + s.stuck_s + ' s' : '')
       + (s.recoveries ? ', ' + s.recoveries + ' recovery power cycle(s)' : '')
       + (s.flash_lent ? ', flash chip lent to flashrom' : '');
@@ -470,10 +472,11 @@ setInterval(show, 3000);
 
 fn camera_json(status: &camera::Status) -> String {
     format!(
-        r#"{{"power":"{}","boot_pin":"{}","usb_devices":{},"stuck_s":{},"recoveries":{},"flash_lent":{},"bootsel":"{}"}}"#,
+        r#"{{"power":"{}","boot_pin":"{}","usb_devices":{},"usb":[{}],"stuck_s":{},"recoveries":{},"flash_lent":{},"bootsel":"{}"}}"#,
         if status.powered { "on" } else { "off" },
         if status.boot_held { "held" } else { "released" },
         status.enumerated,
+        status.usb_ids.iter().map(|(vid, pid)| format!(r#""{vid:04x}:{pid:04x}""#)).collect::<Vec<_>>().join(","),
         status.stuck_for.map_or_else(|| "null".to_owned(), |stuck| stuck.as_secs().to_string()),
         status.recoveries,
         status.flash_lent,

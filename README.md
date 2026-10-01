@@ -255,8 +255,9 @@ switch is not doing its job. A `bootrom` followed by `thingino-dfu -b` puts a ca
 the DFU gadget without anyone touching it.
 
 Answers are JSON: `{"ok":true,"message":...}` or `{"ok":false,"error":...}`. `GET
-/api/camera` reports the power, the boot pin, the USB devices enumerated, how long a USB
-transfer has gone unanswered, the power cycles done for recovery, and BOOTSEL's sense;
+/api/camera` reports the power, the boot pin, the USB devices enumerated and their VID:PID,
+how long a USB transfer has gone unanswered, the power cycles done for recovery, and
+BOOTSEL's sense;
 `POST /api/camera?bootsel=low` or `high` sets the last, saved across restarts.
 
 ### Flash chip

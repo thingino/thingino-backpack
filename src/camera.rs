@@ -29,10 +29,12 @@ use std::thread;
 use std::time::Instant;
 
 use esp_idf_svc::hal::gpio::OutputPin;
+use esp_idf_svc::hal::task::block_on;
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 use esp_idf_svc::sys::{self, esp};
 use log::{info, warn};
 use tdfu_usb::espidf::UsbHost;
+use tdfu_usb::LocalUsbBackend;
 
 use crate::console;
 
@@ -186,6 +188,8 @@ pub struct Status {
     pub powered: bool,
     pub boot_held: bool,
     pub enumerated: usize,
+    /// The VID and PID of each device on the bus.
+    pub usb_ids: Vec<(u16, u16)>,
     pub stuck_for: Option<Duration>,
     pub recoveries: u32,
     pub flash_lent: bool,
@@ -314,10 +318,21 @@ impl Camera {
             let state = self.state();
             (state.powered, state.boot_held, state.flash_lent, state.bootsel_high)
         };
+        // What the USB library read at enumeration: nothing goes over the bus for it.
+        let usb_ids = block_on(self.host.list()).map_or_else(
+            |_| Vec::new(),
+            |found| {
+                found
+                    .iter()
+                    .map(|device| (device.descriptors.vendor_id, device.descriptors.product_id))
+                    .collect()
+            },
+        );
         Status {
             powered,
             boot_held,
             enumerated: self.host.enumerated().len(),
+            usb_ids,
             stuck_for: self.host.stuck_for(),
             recoveries: self.recoveries.load(Ordering::Relaxed),
             flash_lent,
