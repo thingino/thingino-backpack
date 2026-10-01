@@ -224,10 +224,13 @@ jobs:
           Per chip, `thingino-backpack-<chip>.bin` is a first install: write it at 0x0. It holds
           the bootloader, the partition table and the app, and erases the saved Wi-Fi, so the
           unit starts in its setup portal. `thingino-backpack-<chip>-app.bin` is an update that
-          keeps the Wi-Fi settings: write it at 0x10000.
+          keeps the Wi-Fi settings: upload it in the status page's Firmware section, or write it
+          at 0x20000 over USB after erasing the OTA state.
 
               esptool.py --chip esp32s3 write_flash 0x0 thingino-backpack-esp32s3.bin
-              esptool.py --chip esp32s3 write_flash 0x10000 thingino-backpack-esp32s3-app.bin
+              curl -X POST --data-binary @thingino-backpack-esp32s3-app.bin http://<host>.local/api/ota
+
+          Units on 0.1.x have the single-slot layout and take the first-install image once.
 
           `esp32s3` needs no PSRAM, `esp32s3-psram` is for modules with octal PSRAM. The
           `esp32s2` and `esp32p4` images are untested on hardware; see the README.

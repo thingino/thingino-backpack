@@ -15,9 +15,12 @@ CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
-# The partitions end at 3.1 MB, so a 4 MB image header lets one image boot on 4, 8 and
+# The partitions fill 4 MB exactly, so a 4 MB image header lets one image boot on 4, 8 and
 # 16 MB modules alike.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# Firmware updates go to the OTA slot not running; a new firmware that has not confirmed
+# itself by its next reset is rolled back (src/ota.rs).
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # No PSRAM. Images stream through the unit, so nothing it does scales with them, and a
 # build that leaves PSRAM alone runs on every ESP32-S3 module whatever PSRAM it has.

@@ -40,8 +40,6 @@ const PORTAL_IP: Ipv4Addr = Ipv4Addr::new(172, 16, 0, 1);
 const PAGE: &str = include_str!("portal.html");
 /// How long `scan_networks` waits for a sweep it asked for; the app reads for 20 s.
 const SCAN_WAIT: Duration = Duration::from_secs(12);
-/// `save` answers, then restarts, as the cameras' `reboot -d 2` does.
-const RESTART_AFTER: Duration = Duration::from_secs(2);
 /// The app's form, an SSH key included, is well under this.
 const LARGEST_FORM: usize = 4096;
 
@@ -293,7 +291,7 @@ fn serve(scans: &Arc<Scans>, wanted: &Sender<()>, nvs: &EspDefaultNvsPartition) 
             let form = read_form(&mut req)?;
             let body = match save(&nvs, &form) {
                 Ok(()) => {
-                    restart_soon();
+                    crate::restart_soon();
                     r#"{"success": true}"#.to_owned()
                 }
                 Err(error) => format!(r#"{{"success": false, "error": {}}}"#, json_string(&error)),
@@ -383,17 +381,6 @@ fn save(nvs: &EspDefaultNvsPartition, form: &[(String, String)]) -> Result<(), S
     wifi::store(nvs, ssid, secret, hostname)?;
     info!("portal: saved {ssid}; restarting to join it");
     Ok(())
-}
-
-/// Restarts in a moment, so the answer that asked for it reaches the client first.
-pub fn restart_soon() {
-    let _ = thread::Builder::new()
-        .name("restart".into())
-        .stack_size(2048)
-        .spawn(|| {
-            thread::sleep(RESTART_AFTER);
-            unsafe { sys::esp_restart() };
-        });
 }
 
 fn query(uri: &str, key: &str) -> Option<String> {

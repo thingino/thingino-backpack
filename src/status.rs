@@ -14,6 +14,9 @@
 //!   and on every boot after. Same answers as the camera's.
 //! * `POST /api/wifi-reset`, on the Wi-Fi builds: forgets the network, the hostname and the
 //!   TX power, and restarts into the setup portal. Same answers.
+//! * `GET /api/ota`: the running firmware's version, its OTA slot and whether it is confirmed.
+//! * `POST /api/ota`, a release's app image as the body: writes it to the slot not running
+//!   and restarts into it (see [`crate::ota`]). Same answers.
 
 use core::ffi::CStr;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -28,6 +31,7 @@ use tdfu_daemon::DEFAULT_PORT;
 
 use crate::camera::{self, Action, Camera};
 use crate::console;
+use crate::ota;
 use crate::serprog;
 
 /// What the page changes on the Wi-Fi builds. The closures answer what to tell the user.
@@ -57,11 +61,12 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
         .map_err(|err| format!("mDNS: {err}"))?;
 
     // lwIP's socket budget is shared with the daemon and mDNS, and one browser at a time
-    // is all a status page sees. The handlers format onto the heap, so the task needs
-    // ESP-IDF's own default stack rather than esp-idf-svc's 6 KB.
+    // is all a status page sees. The handlers format onto the heap; a firmware update's
+    // write and verify, the deepest path, left 0.7 KB of 4 KB unused, so 5 KB rather than
+    // esp-idf-svc's 6 KB.
     let mut server = EspHttpServer::new(&Configuration {
         max_open_sockets: 3,
-        stack_size: 4096,
+        stack_size: 5120,
         ..Default::default()
     })
     .map_err(|err| format!("status page: {err}"))?;
@@ -107,6 +112,32 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
             })
             .map_err(|err| format!("status page: {err}"))?;
     }
+    server
+        .fn_handler("/api/ota", Method::Get, |req: Request<&mut EspHttpConnection<'_>>| {
+            let running = ota::running();
+            let body = format!(
+                r#"{{"version":"{}","slot":"{}","state":"{}"}}"#,
+                json_escape(&build_id()),
+                json_escape(&running.slot),
+                running.state.name()
+            );
+            json(req, &body)
+        })
+        .map_err(|err| format!("status page: {err}"))?;
+    server
+        .fn_handler("/api/ota", Method::Post, |mut req: Request<&mut EspHttpConnection<'_>>| {
+            let len = req.connection().header("Content-Length").and_then(|len| len.trim().parse::<usize>().ok());
+            let len = len.filter(|&len| len > 0);
+            let Some(len) = len else {
+                let body = r#"{"ok":false,"error":"send the image as the body, with its length"}"#;
+                return req
+                    .into_response(411, None, &[("Content-Type", "application/json")])?
+                    .write_all(body.as_bytes());
+            };
+            let result = ota::update(&mut req, len);
+            json(req, &answer(result))
+        })
+        .map_err(|err| format!("status page: {err}"))?;
     let watched = Arc::clone(&camera);
     server
         .fn_handler("/api/camera", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
@@ -141,7 +172,7 @@ pub fn build_id() -> String {
 
 /// The unit's addresses as clients write them with the daemon's port: IPv6 first, as the
 /// network prefers it, bracketed.
-fn endpoints() -> Vec<String> {
+pub(crate) fn endpoints() -> Vec<String> {
     let netif = unsafe { sys::esp_netif_get_handle_from_ifkey(crate::NETIF_KEY.as_ptr()) };
     if netif.is_null() {
         return Vec::new();
@@ -194,7 +225,8 @@ h2 {{ font-size: 1.1rem; margin: 1.5rem 0 .25rem; }}
 table {{ border-collapse: collapse; }}
 td {{ padding: .15rem .8rem .15rem 0; vertical-align: top; }}
 td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
-.buttons button, .buttons select {{ margin: 0 .25rem .5rem 0; padding: .45rem .7rem; font-size: .95rem; border-radius: .4rem; border: 1px solid #444; background: #1c1c1c; color: #eee; cursor: pointer; }}
+.buttons button, .buttons select, .buttons input::file-selector-button {{ margin: 0 .25rem .5rem 0; padding: .45rem .7rem; font-size: .95rem; border-radius: .4rem; border: 1px solid #444; background: #1c1c1c; color: #eee; cursor: pointer; }}
+.buttons input {{ color: #eee; }}
 </style>
 </head>
 <body>
@@ -226,6 +258,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 {clip}
 </table>
 {wifi}
+{firmware}
 {script}
 </body>
 </html>
@@ -238,6 +271,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
         rfc2217 = console::RFC2217_PORT,
         script = CAMERA_SCRIPT,
         wifi = if wifi { WIFI_SECTION } else { "" },
+        firmware = FIRMWARE_SECTION,
         power = camera.0,
         boot = camera.1,
         tx = console::pins().0,
@@ -298,6 +332,49 @@ document.getElementById('wifi-reset').onclick = () => {
     .then((r) => { said.textContent = r.ok ? r.message : r.error; })
     .catch(() => { said.textContent = 'The backpack did not answer.'; });
 };
+</script>"#;
+
+/// What runs, and an upload of a release's app image to update it.
+const FIRMWARE_SECTION: &str = r#"<h2>Firmware</h2>
+<p id="fw-now" class="dim">&nbsp;</p>
+<p class="buttons"><input type="file" id="fw-file" accept=".bin"> <button id="fw-send" title="Write the chosen firmware to the slot not running, and restart into it">Update</button></p>
+<p class="dim">A release's <code>-app.bin</code> for this chip. The backpack restarts into it, and goes back to the firmware it runs now by itself if the new one is not on the network within five minutes.</p>
+<p id="fw-said"></p>
+<script>
+{
+  const now = document.getElementById('fw-now');
+  const said = document.getElementById('fw-said');
+  const show = () => fetch('/api/ota').then((r) => r.json())
+    .then((o) => {
+      now.textContent = 'Running ' + o.version + ' from ' + o.slot + ', ' + o.state + '.';
+      if (o.state === 'on probation') setTimeout(show, 3000);
+      return true;
+    })
+    .catch(() => false);
+  show();
+  document.getElementById('fw-send').onclick = () => {
+    const file = document.getElementById('fw-file').files[0];
+    if (!file) { said.textContent = 'Choose a firmware file first.'; return; }
+    if (!confirm('Update the backpack with ' + file.name + '? It restarts into the new firmware.')) return;
+    const x = new XMLHttpRequest();
+    x.open('POST', '/api/ota');
+    x.upload.onprogress = (e) => {
+      if (e.lengthComputable) said.textContent = e.loaded < e.total
+        ? 'Sending, ' + Math.floor(100 * e.loaded / e.total) + '%...' : 'Writing and checking...';
+    };
+    x.onload = () => {
+      let r;
+      try { r = JSON.parse(x.responseText); } catch (e) { r = { ok: false, error: 'The backpack answered ' + x.status + '.' }; }
+      said.textContent = r.ok ? r.message : r.error;
+      if (!r.ok) return;
+      // The page comes back once the new firmware answers.
+      const wait = () => setTimeout(() => show().then((up) => (up ? location.reload() : wait())), 2000);
+      setTimeout(wait, 4000);
+    };
+    x.onerror = () => { said.textContent = 'The upload failed.'; };
+    x.send(file);
+  };
+}
 </script>"#;
 
 /// The camera section's buttons and its state, refreshed every few seconds.

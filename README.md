@@ -95,13 +95,20 @@ chip (`esp32s3`, `esp32s3-psram`, `esp32s2`, `esp32p4`) and a `SHA256SUMS`:
 - `thingino-backpack-<chip>.bin` is a first install: the bootloader, the partition table
   and the app in one image, written at 0x0. It erases the saved Wi-Fi, so the unit starts
   in its setup portal.
-- `thingino-backpack-<chip>-app.bin` is an update: written at 0x10000, it keeps the Wi-Fi
-  settings.
+- `thingino-backpack-<chip>-app.bin` is an update, which keeps the Wi-Fi settings: upload it
+  in the status page's Firmware section (see [Firmware updates](#firmware-updates)), or
+  write it at 0x20000 over USB after erasing the OTA state at 0xf000.
 
 ```sh
 esptool.py --chip esp32s3 write_flash 0x0 thingino-backpack-esp32s3.bin
-esptool.py --chip esp32s3 write_flash 0x10000 thingino-backpack-esp32s3-app.bin
+esptool.py --chip esp32s3 erase_region 0xf000 0x2000
+esptool.py --chip esp32s3 write_flash 0x20000 thingino-backpack-esp32s3-app.bin
 ```
+
+Units on 0.1.x have a single firmware slot and no OTA state: they take the first-install
+image once, and then update over the network. Its Wi-Fi settings are kept by writing a
+local build's `bootloader.bin` at 0x0, `partition-table.bin` at 0x8000 and `app.bin` at
+0x20000 instead, after the same `erase_region`.
 
 The images are built for 4 MB of flash and boot on 4, 8 and 16 MB modules. CI builds all
 four on every push and publishes them when a `v*` tag is pushed.
@@ -135,8 +142,9 @@ directory of its own.
 esptool.py --chip esp32s3 write_flash 0x0 images/full.bin
 ```
 
-After that, `write_flash 0x10000 images/app.bin` updates the firmware and keeps the saved
-Wi-Fi settings.
+After that, updates go over the network ([Firmware updates](#firmware-updates)), or over
+USB with `erase_region 0xf000 0x2000` and `write_flash 0x20000 images/app.bin`; both keep
+the saved Wi-Fi settings. The build fails when the app outgrows its 1.9 MB OTA slot.
 
 ## First boot
 
@@ -162,7 +170,7 @@ and restarts into the setup portal. Erasing the NVS partition (`esptool.py erase
 
 | Port      | Service                                                       |
 |-----------|---------------------------------------------------------------|
-| 80        | Status page, `/api/camera` and `/api/wifi`                    |
+| 80        | Status page, `/api/camera`, `/api/wifi` and `/api/ota`        |
 | 2217      | Camera console, RFC 2217                                      |
 | 3000      | Camera console, raw                                           |
 | 5050      | thingino-dfu daemon (`dfu-remote`)                            |
@@ -302,6 +310,25 @@ flashrom -p serprog:ip=<host>.local:8888 -w image.bin            # erases, write
 flashrom -p serprog:ip=<host>.local:8888 -l layout.txt -i uboot -N -w image.bin
 ```
 
+### Firmware updates
+
+The status page's Firmware section takes a release's `thingino-backpack-<chip>-app.bin`,
+and the unit restarts into it; an HTTP POST does the same:
+
+```sh
+curl -X POST --data-binary @thingino-backpack-esp32s3-app.bin http://<host>.local/api/ota
+curl http://<host>.local/api/ota         # {"version":...,"slot":"ota_1","state":"valid"}
+```
+
+- The image goes into the OTA slot that is not running, and nothing switches until it is
+  checked: an image for another chip, a first-install image, or one that does not verify
+  is refused, and the running firmware stays.
+- A new firmware is on probation until the unit has an address on its network. If it
+  resets before that, or has none within five minutes, the bootloader goes back to the
+  firmware it replaced. Until then, further updates are refused.
+- An update takes about 15 s, the restart included. Better not while a camera is being
+  flashed: writing the unit's own flash pauses it for moments at a time.
+
 ### Recovery
 
 A camera that stops serving USB without leaving the bus leaves a control transfer
@@ -336,7 +363,8 @@ and writes.
 ## Security
 
 Nothing on the unit asks for credentials: anyone who can reach it can flash the camera,
-type into its console, and cut its power. Keep it on a network you trust.
+type into its console, cut its power, and replace the unit's own firmware. Keep it on a
+network you trust.
 
 ## Troubleshooting
 

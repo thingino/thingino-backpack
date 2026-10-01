@@ -30,6 +30,7 @@ mod camera;
 mod console;
 #[cfg(esp32p4)]
 mod eth;
+mod ota;
 #[cfg(not(esp32p4))]
 mod portal;
 mod rfc2217;
@@ -57,6 +58,9 @@ const STREAM_ABOVE: u32 = 64 * 1024;
 const DAEMON_STACK: usize = 48 * 1024;
 
 const REPORT_EVERY: Duration = Duration::from_secs(10);
+/// An answer that asks for a restart reaches the client first, as a camera's
+/// `reboot -d 2` does.
+const RESTART_AFTER: Duration = Duration::from_secs(2);
 /// Every sixth memory report is followed by one of every task's stack.
 const STACKS_EVERY: u32 = 6;
 
@@ -78,6 +82,9 @@ fn run() -> Result<(), String> {
     let eventfs = MountedEventfs::mount(4).map_err(|err| format!("eventfd: {err}"))?;
     let peripherals = Peripherals::take().map_err(|err| err.to_string())?;
     let sysloop = EspSystemEventLoop::take().map_err(|err| err.to_string())?;
+    // A new firmware's first boot: it has to reach the network, or it is rolled back. The
+    // setup portal is no network, so a firmware that ends up there goes back too.
+    ota::confirm_when_reachable(|| !status::endpoints().is_empty());
     #[cfg(not(esp32p4))]
     let (network, hostname, settings) = {
         let nvs = EspDefaultNvsPartition::take().map_err(|err| err.to_string())?;
@@ -90,7 +97,7 @@ fn run() -> Result<(), String> {
         let settings = status::Wifi {
             reset: Box::new(move || {
                 wifi::forget(&forget)?;
-                portal::restart_soon();
+                restart_soon();
                 Ok(format!("Wi-Fi settings erased; restarting into the setup portal {}", wifi::portal_ssid()))
             }),
             set_tx_power: Box::new(move |power| wifi::set_tx_power(&store, power)),
@@ -231,6 +238,17 @@ fn stacks_report() {
         line.push_str(&format!(" {name} {}", task.usStackHighWaterMark));
     }
     info!("stacks unused:{line}");
+}
+
+/// Restarts in [`RESTART_AFTER`].
+fn restart_soon() {
+    let _ = std::thread::Builder::new()
+        .name("restart".into())
+        .stack_size(2048)
+        .spawn(|| {
+            std::thread::sleep(RESTART_AFTER);
+            unsafe { sys::esp_restart() };
+        });
 }
 
 /// Spawns a thread whose FreeRTOS task is called `name`, as the stack report prints it: a

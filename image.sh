@@ -1,8 +1,8 @@
 #!/bin/sh
-# Builds the flash images: bootloader (0x0), partition table (0x8000) and app (0x10000),
-# and full.bin, all three in one image to write at 0x0. full.bin is for a first install:
-# it also erases the saved Wi-Fi settings. The three separately, or app.bin alone,
-# keep them.
+# Builds the flash images: bootloader (0x0), partition table (0x8000) and app (0x20000, the
+# first OTA slot), and full.bin, all three in one image to write at 0x0. full.bin is for a
+# first install: it also erases the saved Wi-Fi settings and the OTA state. app.bin is what
+# the status page takes as an update.
 #
 # `./image.sh` builds for the ESP32-S3 without PSRAM. A variant builds in a target directory
 # of its own, so switching does not rebuild ESP-IDF each time:
@@ -39,6 +39,13 @@ sdkconfig=$(ls -t "$out"/build/esp-idf-sys-*/out/sdkconfig | head -1)
 setting() { sed -n "s/^CONFIG_ESPTOOLPY_$1=\"\(.*\)\"$/\1/p" "$sdkconfig"; }
 flash="--flash-mode $(setting FLASHMODE) --flash-freq $(setting FLASHFREQ)hz --flash-size $(setting FLASHSIZE | tr A-Z a-z)"
 espflash save-image --chip "$chip" $flash "$out/backpack" "$images"/app.bin
-espflash save-image --chip "$chip" $flash --merge --skip-padding \
+espflash save-image --chip "$chip" $flash --merge --skip-padding --target-app-partition ota_0 \
 	--bootloader "$images"/bootloader.bin --partition-table partitions.csv "$out/backpack" "$images"/full.bin
+# An app larger than an OTA slot would be written over the next partition, or not at all.
+slot=$((0x1f0000))
+size=$(wc -c < "$images"/app.bin)
+if [ "$size" -gt "$slot" ]; then
+	echo "app.bin is $size bytes, more than an OTA slot's $slot" >&2
+	exit 1
+fi
 ls -l "$images"
