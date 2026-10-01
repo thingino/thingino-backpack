@@ -11,6 +11,8 @@
 //!   `{"ok":true,"message":...}` or `{"ok":false,"error":...}`.
 //! * `POST /api/camera?bootsel=low` or `high`: what BOOTSEL does to boot from USB, now and
 //!   on every boot after. Same answers.
+//! * `POST /api/camera?usb_port=on` or `off`: whether the backpack holds the camera's USB
+//!   lines, now and on every boot after (see [`crate::usb`]). Same answers.
 //! * `GET /api/flash`: whether the flash programmer drives the chip's VCC and HOLD, as JSON.
 //! * `POST /api/flash?vcc=driven|alone&hold=driven|alone`, either or both: what it drives
 //!   from the next flashrom session on, and on every boot after. Same answers.
@@ -154,6 +156,14 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
         .fn_handler("/api/camera", Method::Post, move |req: Request<&mut EspHttpConnection<'_>>| {
             let query = req.uri().split_once('?').map_or("", |(_, query)| query);
             let field = |name: &str| query.split('&').find_map(|pair| pair.strip_prefix(name));
+            if let Some(port) = field("usb_port=") {
+                let result = match port {
+                    "on" => camera.set_usb(true),
+                    "off" => camera.set_usb(false),
+                    _ => Err("usb_port must be on or off".into()),
+                };
+                return json(req, &answer(result));
+            }
             if let Some(level) = field("bootsel=") {
                 let result = match level {
                     "low" => camera.set_bootsel(false),
@@ -294,6 +304,8 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 <p class="dim">Enter bootrom holds the boot pin through a power cycle, so the camera boots from USB, and lets go of the pin once the bootrom enumerates: then <code>thingino-dfu -b</code> brings up the DFU gadget.</p>
 <p class="buttons">BOOTSEL <select id="bootsel" title="What BOOTSEL does to boot from USB"><option value="low">pulled low</option><option value="high">driven high</option></select> <button id="bootsel-set" title="Set what BOOTSEL does to boot from USB, now and on every boot after">Set</button></p>
 <p class="dim">For boards that bring out the SoC's boot select: it moves with the boot pin. Driven high, it is only driven while the backpack has the camera powered.</p>
+<p class="buttons">USB <select id="usb-port" title="Whether the backpack holds the camera's USB lines"><option value="on">connected</option><option value="off">disconnected</option></select> <button id="usb-set" title="Connect or disconnect the backpack's USB port, now and on every boot after">Set</button></p>
+<p class="dim">Disconnected, the backpack powers its USB port down and lets go of the lines, for a camera whose SoC hosts a USB Wi-Fi module on them. Entering the bootrom needs it connected.</p>
 <p id="said"></p>
 <h2>Wiring</h2>
 <table>
@@ -432,12 +444,15 @@ const FIRMWARE_SECTION: &str = r#"<h2>Firmware</h2>
 const CAMERA_SCRIPT: &str = r"<script>
 const $ = (id) => document.getElementById(id);
 let bootselShown = false;
+let usbShown = false;
 function show() {
   fetch('/api/camera').then((r) => r.json()).then((s) => {
     // Once, so a choice being made is not undone.
     if (!bootselShown) { $('bootsel').value = s.bootsel; bootselShown = true; }
+    if (!usbShown) { $('usb-port').value = s.usb_port; usbShown = true; }
     $('cam').textContent = 'Power ' + s.power + ', boot pin ' + s.boot_pin + ', ' + s.usb_devices + ' USB device(s)'
       + (s.usb.length ? ' (' + s.usb.join(', ') + ')' : '')
+      + (s.usb_port === 'off' ? ', USB disconnected' : '')
       + (s.stuck_s !== null ? ', a USB transfer unanswered for ' + s.stuck_s + ' s' : '')
       + (s.recoveries ? ', ' + s.recoveries + ' recovery power cycle(s)' : '')
       + (s.flash_lent ? ', flash chip lent to flashrom' : '');
@@ -457,6 +472,12 @@ $('bootsel-set').onclick = () => {
     .then((r) => { $('said').textContent = r.ok ? r.message : r.error; })
     .catch(() => { $('said').textContent = 'The backpack did not answer.'; });
 };
+$('usb-set').onclick = () => {
+  $('said').textContent = 'Setting USB...';
+  fetch('/api/camera?usb_port=' + $('usb-port').value, { method: 'POST' }).then((r) => r.json())
+    .then((r) => { $('said').textContent = r.ok ? r.message : r.error; show(); })
+    .catch(() => { $('said').textContent = 'The backpack did not answer.'; });
+};
 fetch('/api/flash').then((r) => r.json()).then((f) => { $('flash-vcc').value = f.vcc; $('flash-hold').value = f.hold; })
   .catch(() => {});
 $('flash-set').onclick = () => {
@@ -472,7 +493,7 @@ setInterval(show, 3000);
 
 fn camera_json(status: &camera::Status) -> String {
     format!(
-        r#"{{"power":"{}","boot_pin":"{}","usb_devices":{},"usb":[{}],"stuck_s":{},"recoveries":{},"flash_lent":{},"bootsel":"{}"}}"#,
+        r#"{{"power":"{}","boot_pin":"{}","usb_devices":{},"usb":[{}],"stuck_s":{},"recoveries":{},"flash_lent":{},"bootsel":"{}","usb_port":"{}"}}"#,
         if status.powered { "on" } else { "off" },
         if status.boot_held { "held" } else { "released" },
         status.enumerated,
@@ -481,6 +502,7 @@ fn camera_json(status: &camera::Status) -> String {
         status.recoveries,
         status.flash_lent,
         if status.bootsel_high { "high" } else { "low" },
+        if status.usb_on { "on" } else { "off" },
     )
 }
 

@@ -256,9 +256,25 @@ the DFU gadget without anyone touching it.
 
 Answers are JSON: `{"ok":true,"message":...}` or `{"ok":false,"error":...}`. `GET
 /api/camera` reports the power, the boot pin, the USB devices enumerated and their VID:PID,
-how long a USB transfer has gone unanswered, the power cycles done for recovery, and
-BOOTSEL's sense;
-`POST /api/camera?bootsel=low` or `high` sets the last, saved across restarts.
+how long a USB transfer has gone unanswered, the power cycles done for recovery, BOOTSEL's
+sense and whether the USB port is connected. `POST /api/camera?bootsel=low` or `high` sets
+BOOTSEL's sense, saved across restarts.
+
+#### USB port
+
+A camera whose SoC hosts a USB Wi-Fi module on the same lines as the backpack's USB cannot
+have a second host on them. `POST /api/camera?usb_port=off`, or USB disconnected on the
+status page, saved across restarts, takes the backpack off the lines: its root port powers
+down, so it stops resetting and enumerating, and on the S2 and S3 its PHY lets go too, its
+pull resistors off and its pads disconnected. `usb_port=on` takes them back, and a device on
+the port enumerates. `bootrom` is refused while the port is off, as the bootrom only shows
+up on USB.
+
+- Off is not unwired. At its own restart the backpack's port comes up for a moment before
+  the setting applies, and at USB high speed, which many Wi-Fi modules use, the stub of
+  wire alone can upset the camera's link: keep D+ and D- short, or switch them with a USB
+  switch IC.
+- On the P4, only the port powers down: its high-speed PHY stays on the lines.
 
 ### Flash chip
 

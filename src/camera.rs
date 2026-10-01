@@ -20,6 +20,9 @@
 //! they are back. With the chip on the camera's own supply, it parks the camera first: a
 //! power cycle with the boot pin held, so the bootrom finds no SPL and leaves the flash's
 //! pins alone; the camera stays on in its bootrom until they are back, then goes off.
+//!
+//! The camera's USB lines can be let go of, a setting saved in NVS (see [`crate::usb`]).
+//! Entering the bootrom needs them, as the bootrom only shows up on USB.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
@@ -37,6 +40,7 @@ use tdfu_usb::espidf::UsbHost;
 use tdfu_usb::LocalUsbBackend;
 
 use crate::console;
+use crate::usb;
 
 /// Long enough for the camera's supply to drain, so a power cycle is a cold boot.
 const OFF_FOR: Duration = Duration::from_secs(1);
@@ -67,6 +71,8 @@ const ANSWER_WITHIN: Duration = Duration::from_secs(20);
 /// Where the BOOTSEL setting is kept: 1 for driven high, anything else for pulled low.
 const NAMESPACE: &str = "camera";
 const BOOTSEL_HIGH: &str = "bootsel_high";
+/// Where the USB setting is kept: 1 for the lines let go of, anything else for held.
+const USB_OFF: &str = "usb_off";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -124,6 +130,8 @@ struct State {
     parked: bool,
     /// BOOTSEL is driven high to boot from USB, rather than pulled low.
     bootsel_high: bool,
+    /// The backpack holds the camera's USB lines; let go of, its port is down.
+    usb_on: bool,
 }
 
 impl State {
@@ -194,6 +202,7 @@ pub struct Status {
     pub recoveries: u32,
     pub flash_lent: bool,
     pub bootsel_high: bool,
+    pub usb_on: bool,
 }
 
 /// The flash chip, lent to the flash programmer: the camera's power stays as it is, and the
@@ -239,6 +248,11 @@ pub fn start(
         warn!("camera: reading the BOOTSEL setting: {err}");
         None
     }) == Some(1);
+    let saved = EspNvs::new(nvs.clone(), NAMESPACE, true).and_then(|store| store.get_u8(USB_OFF));
+    let usb_on = saved.unwrap_or_else(|err| {
+        warn!("camera: reading the USB setting: {err}");
+        None
+    }) != Some(1);
     // The level goes in before the pin becomes an output, so the boot pin never pulls the
     // flash low for an instant while the camera may be using it.
     configure(pins.boot, sys::gpio_mode_t_GPIO_MODE_OUTPUT_OD, 1).map_err(|err| format!("boot pin: {err}"))?;
@@ -248,11 +262,12 @@ pub fn start(
         .map_err(|err| format!("boot pin: {err}"))?;
     configure(pins.power, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1).map_err(|err| format!("power pin: {err}"))?;
     info!(
-        "camera: power on GPIO{}, boot pin on GPIO{}, BOOTSEL on GPIO{} ({})",
+        "camera: power on GPIO{}, boot pin on GPIO{}, BOOTSEL on GPIO{} ({}), USB {}",
         pins.power,
         pins.boot,
         pins.bootsel,
-        bootsel_name(bootsel_high)
+        bootsel_name(bootsel_high),
+        usb_name(usb_on)
     );
 
     let (requests, received) = mpsc::channel();
@@ -272,6 +287,7 @@ pub fn start(
             flash_lent: false,
             parked: false,
             bootsel_high,
+            usb_on,
         }),
         host,
         requests,
@@ -280,6 +296,12 @@ pub fn start(
     });
     // Released, whichever its sense.
     camera.state().bootsel(&camera.pins);
+    // The library came up with the lines held.
+    if !usb_on {
+        if let Err(err) = usb::connect(false) {
+            warn!("camera: letting go of USB: {err}");
+        }
+    }
     let supervisor = Arc::clone(&camera);
     crate::spawn_named(c"camera", 4096, move || supervise(&supervisor, &received))
         .map_err(|err| format!("camera: {err}"))?;
@@ -314,9 +336,9 @@ impl Camera {
     }
 
     pub fn status(&self) -> Status {
-        let (powered, boot_held, flash_lent, bootsel_high) = {
+        let (powered, boot_held, flash_lent, bootsel_high, usb_on) = {
             let state = self.state();
-            (state.powered, state.boot_held, state.flash_lent, state.bootsel_high)
+            (state.powered, state.boot_held, state.flash_lent, state.bootsel_high, state.usb_on)
         };
         // What the USB library read at enumeration: nothing goes over the bus for it.
         let usb_ids = block_on(self.host.list()).map_or_else(
@@ -337,6 +359,7 @@ impl Camera {
             recoveries: self.recoveries.load(Ordering::Relaxed),
             flash_lent,
             bootsel_high,
+            usb_on,
         }
     }
 
@@ -350,6 +373,18 @@ impl Camera {
         state.bootsel(&self.pins);
         info!("camera: BOOTSEL {}", bootsel_name(high));
         Ok(format!("BOOTSEL {}", bootsel_name(high)))
+    }
+
+    /// Holds the camera's USB lines or lets go of them, at once and for every boot after,
+    /// answering what to tell the user.
+    pub fn set_usb(&self, on: bool) -> Result<String, String> {
+        let mut state = self.state();
+        usb::connect(on).map_err(|err| format!("USB port: {err}"))?;
+        state.usb_on = on;
+        info!("camera: USB {}", usb_name(on));
+        let store = EspNvs::new(self.nvs.clone(), NAMESPACE, true).map_err(|err| format!("opening NVS: {err}"))?;
+        store.set_u8(USB_OFF, u8::from(!on)).map_err(|err| format!("saving the USB setting: {err}"))?;
+        Ok(format!("USB {}", usb_name(on)))
     }
 
     /// Lends the flash chip to the flash programmer. With the chip on the programmer's VCC,
@@ -518,6 +553,9 @@ impl Camera {
     }
 
     fn bootrom(&self) -> Result<String, String> {
+        if !self.state().usb_on {
+            return Err("USB is disconnected, and the bootrom only shows up on USB: connect it first".into());
+        }
         {
             let mut state = self.state();
             state.boot(&self.pins, true);
@@ -608,6 +646,10 @@ impl Camera {
     }
 }
 
+fn usb_name(on: bool) -> &'static str {
+    if on { "connected" } else { "disconnected" }
+}
+
 /// What BOOTSEL does to boot from USB.
 fn bootsel_name(high: bool) -> &'static str {
     if high { "driven high to boot from USB" } else { "pulled low to boot from USB" }
@@ -657,10 +699,11 @@ impl Recovery {
             self.cooldown = FIRST_COOLDOWN;
         }
         {
-            // Power that is meant to be off stays off, a bootrom entry is not cut short, and a
-            // camera parked for the flash programmer stays parked.
+            // Power that is meant to be off stays off, a bootrom entry is not cut short, a
+            // camera parked for the flash programmer stays parked, and one off USB is not
+            // watched.
             let state = camera.state();
-            if !state.powered || state.boot_watch.is_some() || state.parked {
+            if !state.powered || state.boot_watch.is_some() || state.parked || !state.usb_on {
                 return;
             }
         }

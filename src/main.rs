@@ -39,6 +39,7 @@ mod portal;
 mod rfc2217;
 mod serprog;
 mod status;
+mod usb;
 #[cfg(not(esp32p4))]
 mod wifi;
 
