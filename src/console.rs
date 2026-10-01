@@ -1,6 +1,6 @@
 //! The camera's serial console over TCP.
 //!
-//! UART1 at 115200 8N1, GPIO17 driving the camera's RX and GPIO18 listening to its TX,
+//! UART1 at 115200 8N1, one pin driving the camera's RX and one listening to its TX,
 //! served raw on [`PORT`] and as RFC 2217 on [`RFC2217_PORT`] (baud rate, break, and DTR/RTS
 //! for the camera's boot pin and power, see [`crate::camera::Camera::lines`]). One client at
 //! a time across both: a new connection takes the console over, so a client that vanished

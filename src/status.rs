@@ -256,7 +256,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 /// Where the camera's USB lands: GPIO pins on the full-speed chips, a port of its own on the
 /// P4's high-speed controller.
 #[cfg(not(esp32p4))]
-const USB_PINS: (&str, &str) = ("GPIO19, GPIO20", "D-, D+ of the OTG port");
+const USB_PINS: (&str, &str) = ("GPIO19, GPIO20", "D-, D+ of the native USB port");
 #[cfg(esp32p4)]
 const USB_PINS: (&str, &str) = ("USB 2.0 HS", "the high-speed OTG port");
 

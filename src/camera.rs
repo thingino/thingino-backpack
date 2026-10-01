@@ -1,9 +1,9 @@
 //! The camera's power and boot pin.
 //!
-//! GPIO15 switches the camera's supply through a MOSFET module, high for on. GPIO16 goes to
-//! the camera's flash pin 5 and is open-drain, so it only ever pulls low or lets go: low
-//! holds the flash's data input at ground, the bootrom cannot read its SPL and falls back
-//! to USB boot; released, the flash works as before.
+//! The power pin switches the camera's supply through a MOSFET module, high for on. The boot
+//! pin goes to the camera's flash pin 5 and is open-drain, so it only ever pulls low or lets
+//! go: low holds the flash's data input at ground, the bootrom cannot read its SPL and falls
+//! back to USB boot; released, the flash works as before.
 //!
 //! What takes time runs on a thread of its own: power cycles, entering the bootrom (hold
 //! the pin, cycle the power, let the pin go as soon as the bootrom enumerates, since U-Boot

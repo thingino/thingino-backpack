@@ -105,11 +105,14 @@ fn run() -> Result<(), String> {
         let hostname = eth::default_hostname();
         (eth::start(sysloop, &hostname)?, hostname, None)
     };
-    // Power, boot pin, UART TX and RX. The P4's are placeholders until a board is chosen:
-    // clear of its Ethernet, console and strapping pins, and nothing more is known.
+    // Power, boot pin, UART TX and RX. On the S2 and S3 everything is on GPIO1 to 9, which
+    // every common board has on its edge pins: DevKitC-style boards, the XIAO ESP32S3, the
+    // S3 Super Mini, the Waveshare ESP32-S3-Zero and the S2 Mini. The P4's are placeholders
+    // until a board is chosen: clear of its Ethernet, console and strapping pins, and
+    // nothing more is known.
     #[cfg(not(esp32p4))]
     let (power, boot, tx, rx) =
-        (peripherals.pins.gpio15, peripherals.pins.gpio16, peripherals.pins.gpio17, peripherals.pins.gpio18);
+        (peripherals.pins.gpio1, peripherals.pins.gpio9, peripherals.pins.gpio2, peripherals.pins.gpio3);
     #[cfg(esp32p4)]
     let (power, boot, tx, rx) =
         (peripherals.pins.gpio20, peripherals.pins.gpio21, peripherals.pins.gpio22, peripherals.pins.gpio23);
@@ -117,7 +120,7 @@ fn run() -> Result<(), String> {
     // VCC. MOSI is the boot pin, on the flash's DI already. The P4's are placeholders too.
     #[cfg(not(esp32p4))]
     let (cs, clk, miso, vcc) =
-        (peripherals.pins.gpio10, peripherals.pins.gpio12, peripherals.pins.gpio13, peripherals.pins.gpio14);
+        (peripherals.pins.gpio5, peripherals.pins.gpio7, peripherals.pins.gpio8, peripherals.pins.gpio4);
     #[cfg(esp32p4)]
     let (cs, clk, miso, vcc) =
         (peripherals.pins.gpio45, peripherals.pins.gpio46, peripherals.pins.gpio47, peripherals.pins.gpio48);

@@ -45,16 +45,29 @@ images stream through it, so the default build runs without PSRAM.
 
 | ESP32-S3, -S2   | ESP32-P4                  | Camera                                                                   |
 |-----------------|---------------------------|--------------------------------------------------------------------------|
-| GPIO15          | GPIO20                    | Power switch (a MOSFET module or similar): high = camera on              |
-| GPIO16          | GPIO21                    | Flash DI, pin 5 of an SOIC-8 NOR flash (open-drain: low = boot from USB) |
-| GPIO17 (TX)     | GPIO22 (TX)               | UART RX                                                                  |
-| GPIO18 (RX)     | GPIO23 (RX)               | UART TX                                                                  |
+| GPIO1           | GPIO20                    | Power switch (a MOSFET module or similar): high = camera on              |
+| GPIO9           | GPIO21                    | Flash DI, pin 5 of an SOIC-8 NOR flash (open-drain: low = boot from USB) |
+| GPIO2 (TX)      | GPIO22 (TX)               | UART RX                                                                  |
+| GPIO3 (RX)      | GPIO23 (RX)               | UART TX                                                                  |
 | GPIO19, GPIO20  | the high-speed port's own | USB D-, D+                                                               |
 | GND             | GND                       | GND                                                                      |
 
-- The S2 and S3 share every pin, and GPIO19 and GPIO20 are the only pins their USB PHY
-  reaches. The P4's high-speed port has D- and D+ pins of its own, which are not GPIOs.
-  The P4's power, boot and UART pins were picked without a particular board in mind: move
+- The S2 and S3 share every pin, and GPIO1 to 9 are on the edge pins of the common boards:
+  DevKitC-style boards, every XIAO ESP32S3 (GPIO1 to 6 are D0 to D5, GPIO7 to 9 are D8 to
+  D10), and the S3 Super Mini, Waveshare ESP32-S3-Zero and S2 Mini, which label their pins
+  with GPIO numbers.
+- GPIO19 and GPIO20 are the only pins the S2's and S3's USB PHY reaches. On a XIAO, a Super
+  Mini, an S3-Zero or an S2 Mini they go only to the USB-C port, which is then the camera's:
+  the board runs from its 5V pin (VBUS on the S2 Mini), and reflashing it means holding BOOT
+  while plugging it into the computer. The P4's high-speed port has D- and D+ pins of its
+  own, which are not GPIOs.
+- Some DevKitC-style boards have a solder jumper on the back labeled USB-OTG, which
+  connects the native USB port's VBUS to the board's 5 V. Whether it needs closing depends
+  on the board and on how the camera is hooked up: a camera on that port that gets no VBUS
+  may not enumerate.
+- On a XIAO ESP32S3 Sense, GPIO7 to 9 are shared with the expansion board's SD card slot,
+  which has to stay empty.
+- The P4's power, boot and UART pins were picked without a particular board in mind: move
   them in `src/main.rs` if the board needs those GPIOs, and keep off its strapping pins,
   GPIO34 to 38.
 - The UART is 3.3 V on both sides. The ESP32's TX only drives the camera's RX while the
@@ -67,9 +80,10 @@ images stream through it, so the default build runs without PSRAM.
 - The power switch should switch the supply's + side. The camera's ground also reaches the
   ESP32 through the USB cable and the UART ground, so a switch on the ground side can be
   bypassed.
-- The ESP32's own log is on UART0 at 115200 8N1: GPIO43 TX and GPIO44 RX on the S2 and S3,
-  GPIO37 TX and GPIO38 RX on the P4. Most boards bring it out through their USB-UART
-  bridge. The camera's USB port is never a console.
+- The ESP32's own log is on UART0 at 115200 8N1: GPIO43 TX and GPIO44 RX on the S2 and S3
+  (D6 and D7 on a XIAO), GPIO37 TX and GPIO38 RX on the P4. Boards with a USB-UART bridge
+  bring it out there; the S2 Mini has neither the bridge nor the pins. The camera's USB
+  port is never a console.
 - The pins are set in `src/main.rs`, per chip; the status page lists the ones in use. The
   flash programmer's clip has pins of its own, in [Flash chip](#flash-chip).
 
@@ -234,11 +248,11 @@ reaches the unit reads and writes the chip over the network.
 
 | ESP32-S3, -S2        | ESP32-P4             | Flash chip                                   |
 |----------------------|----------------------|----------------------------------------------|
-| GPIO10               | GPIO45               | CS, pin 1                                    |
-| GPIO13               | GPIO47               | DO, pin 2                                    |
-| GPIO12               | GPIO46               | CLK, pin 6                                   |
-| GPIO16, the boot pin | GPIO21, the boot pin | DI, pin 5, wired already as the boot pin     |
-| GPIO14               | GPIO48               | a switch from 3.3 V to VCC, pin 8 (high: on) |
+| GPIO5                | GPIO45               | CS, pin 1                                    |
+| GPIO8                | GPIO47               | DO, pin 2                                    |
+| GPIO7                | GPIO46               | CLK, pin 6                                   |
+| GPIO9, the boot pin  | GPIO21, the boot pin | DI, pin 5, wired already as the boot pin     |
+| GPIO4                | GPIO48               | a switch from 3.3 V to VCC, pin 8 (high: on) |
 | GND                  | GND                  | GND, pin 4                                   |
 
 - The switch is a high-side one, on while its pin is high: a load-switch module with an
