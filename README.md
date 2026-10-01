@@ -28,8 +28,9 @@ images stream through it, so the default build runs without PSRAM.
 | ESP32-S2 | `./image.sh s2`                         | Wi-Fi    | full speed | builds, untested |
 | ESP32-P4 | `./image.sh p4`                         | Ethernet | high speed | builds, untested |
 
-- **ESP32-S3:** the default build needs no PSRAM; `psram` is for modules with octal PSRAM
-  (N8R8, N16R8).
+- **ESP32-S3:** the build needs no PSRAM and runs on every S3 module. `./image.sh psram`
+  makes one that also puts octal PSRAM (N8R8, N16R8) to use; nothing needs it yet, so
+  releases leave it out.
 - **ESP32-S2:** one core and 320 KB of SRAM, which does not hold a bootstrap next to Wi-Fi,
   so the build is for modules with PSRAM (quad, like the 2 MB of an S2FN4R2). On boards
   whose only USB port is the native one, that port is the camera's.
@@ -90,7 +91,7 @@ images stream through it, so the default build runs without PSRAM.
 ## Flashing a release
 
 Each [release](https://github.com/thingino/thingino-backpack/releases) has two images per
-chip (`esp32s3`, `esp32s3-psram`, `esp32s2`, `esp32p4`) and a `SHA256SUMS`:
+chip (`esp32s3`, `esp32s2`, `esp32p4`) and a `SHA256SUMS`:
 
 - `thingino-backpack-<chip>.bin` is a first install: the bootloader, the partition table
   and the app in one image, written at 0x0. It erases the saved Wi-Fi, so the unit starts
@@ -111,7 +112,7 @@ local build's `bootloader.bin` at 0x0, `partition-table.bin` at 0x8000 and `app.
 0x20000 instead, after the same `erase_region`.
 
 The images are built for 4 MB of flash and boot on 4, 8 and 16 MB modules. CI builds all
-four on every push and publishes them when a `v*` tag is pushed.
+three on every push and publishes them when a `v*` tag is pushed.
 
 ## Building
 

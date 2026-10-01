@@ -59,7 +59,6 @@ jobs:
           # `variant` is image.sh's argument; `family` decides which compilers ESP-IDF
           # installs, and so which toolchain cache a job shares.
           - { name: esp32s3, variant: "", family: xtensa }
-          - { name: esp32s3-psram, variant: psram, family: xtensa }
           - { name: esp32s2, variant: s2, family: xtensa }
           - { name: esp32p4, variant: p4, family: riscv }
     env:
@@ -206,13 +205,13 @@ jobs:
           merge-multiple: true
           path: dist
 
-      # Two images per chip, four chips: a leg that produced nothing must not become a
+      # Two images per chip, three chips: a leg that produced nothing must not become a
       # release with a download missing.
       - name: Gather
         run: |
           cd dist
           count=$(ls *.bin | wc -l)
-          test "$count" = 8 || { echo "expected 8 images, have $count:"; ls -l; exit 1; }
+          test "$count" = 6 || { echo "expected 6 images, have $count:"; ls -l; exit 1; }
           sha256sum *.bin > SHA256SUMS
           cat SHA256SUMS
 
@@ -232,8 +231,8 @@ jobs:
 
           Units on 0.1.x have the single-slot layout and take the first-install image once.
 
-          `esp32s3` needs no PSRAM, `esp32s3-psram` is for modules with octal PSRAM. The
-          `esp32s2` and `esp32p4` images are untested on hardware; see the README.
+          `esp32s3` runs on every ESP32-S3 module, PSRAM or not. The `esp32s2` and `esp32p4`
+          images are untested on hardware; see the README.
           EOF
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag $pre \
             --title "thingino-backpack ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes \
