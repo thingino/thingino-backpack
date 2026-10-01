@@ -54,7 +54,8 @@ images stream through it, so the default build runs without PSRAM.
 | GPIO19, GPIO20  | the high-speed port's own | USB D-, D+                                                               |
 | GND             | GND                       | GND                                                                      |
 
-- The S2 and S3 share every pin, and GPIO1 to 9 are on the edge pins of the common boards:
+- The S2 and S3 share every pin but the flash's HOLD, and GPIO1 to 9 are on the edge pins of
+  the common boards:
   DevKitC-style boards, every XIAO ESP32S3 (GPIO1 to 6 are D0 to D5, GPIO7 to 9 are D8 to
   D10), and the S3 Super Mini, Waveshare ESP32-S3-Zero and S2 Mini, which label their pins
   with GPIO numbers.
@@ -89,9 +90,10 @@ images stream through it, so the default build runs without PSRAM.
   ESP32 through the USB cable and the UART ground, so a switch on the ground side can be
   bypassed.
 - The ESP32's own log is on UART0 at 115200 8N1: GPIO43 TX and GPIO44 RX on the S2 and S3
-  (D6 and D7 on a XIAO), GPIO37 TX and GPIO38 RX on the P4. Boards with a USB-UART bridge
-  bring it out there; the S2 Mini has neither the bridge nor the pins. The camera's USB
-  port is never a console.
+  (D6 and D7 on a XIAO), GPIO37 TX and GPIO38 RX on the P4. On the S3, GPIO44 is the flash's
+  HOLD instead, and the log is output only. Boards with a USB-UART bridge bring it out
+  there; the S2 Mini has neither the bridge nor the pins. The camera's USB port is never a
+  console.
 - The pins are set in `src/main.rs`, per chip; the status page lists the ones in use. The
   flash programmer's clip has pins of its own, in [Flash chip](#flash-chip).
 
@@ -270,28 +272,34 @@ reaches the unit reads and writes the chip over the network.
 | GPIO7                | GPIO46               | CLK, pin 6                                          |
 | GPIO9, the boot pin  | GPIO21, the boot pin | DI, pin 5, wired already as the boot pin            |
 | GPIO3                | GPIO32               | VCC, pin 8 (or the unit's 3V3, on a bare chip)      |
-| GPIO39               | GPIO33               | WP, pin 3                                           |
-| GPIO40               | GPIO53               | HOLD, pin 7                                         |
+| GPIO44 (S2: GPIO40)  | GPIO53               | HOLD, pin 7                                         |
+| none                 | none                 | WP, pin 3: unconnected                              |
 | GND                  | GND                  | GND, pin 4                                          |
 
 - Pin 1 is the chip's dot, and the clip's red wire goes on it. A clip on backwards puts the
   unit's 3.3 V on the chip's ground pin, a short: the unit drops off Wi-Fi and browns out.
 - 3.3 V chips only. A 1.8 V chip (W25Q...W, GD25LQ, MX25U, XM25QU) needs a level shifter
   and a 1.8 V supply.
-- VCC, WP and HOLD are only driven while flashrom has the pins enabled: VCC powers the chip
-  first, then WP and HOLD go high, so the chip runs plain single-bit SPI that nothing can
-  pause; afterwards all three are let go. That suits a backpack soldered to the camera's
-  flash for good. On the camera's board, VCC is its 3.3 V rail and WP and HOLD are the
-  SoC's quad data lines, so outside a session they are the camera's, and it boots as if
-  the backpack were not there.
+- VCC and HOLD are only driven while flashrom has the pins enabled: VCC powers the chip
+  first, then HOLD goes high so that nothing can pause the chip; afterwards both are let
+  go. That suits a backpack soldered to the camera's flash for good. On the camera's board,
+  VCC is its 3.3 V rail and HOLD one of the SoC's quad data lines, so outside a session
+  they are the camera's, and it boots as if the backpack were not there.
+- WP stays unconnected: a chip heeds it only to keep its status register locked, and only
+  with quad mode off, so reading, writing and erasing work without it. A chip locked that
+  way (SRWD set, quad mode off) needs WP tied to VCC before flashrom can clear its block
+  protection.
 - A GPIO gives about 40 mA. If powering the chip through pin 8 also feeds more of the
   camera's 3.3 V rail than that, the voltage sags; drive a high-side switch from the VCC
   GPIO instead.
 - A clip on a bare chip can take VCC from the unit's 3V3 instead, with WP and HOLD tied to
   it.
-- GPIO39 and GPIO40 are pads on the back of a XIAO, an S3-Zero and the Super Mini, and edge
-  pins on the S2 Mini and DevKitC-style boards. On a XIAO ESP32S3 Sense, they are its
-  camera's I2C.
+- GPIO44 is an edge pin on every S3 board: D7 on a XIAO, RX on the Super Mini and the
+  S3-Zero. It is UART0's RX too: on DevKitC-style boards the USB-UART bridge drives it high.
+  That is HOLD's level in a session anyway, but outside one the bridge still drives it,
+  into an unpowered chip through its HOLD pin or into a running camera's quad data line, so
+  a backpack soldered to a camera's flash wants a board without a bridge there. The S2
+  Mini has no GPIO44; on the S2, HOLD is GPIO40, an edge pin there.
 
 Then run flashrom from any computer that reaches the unit. Until flashrom's serprog client
 gains IPv6 (1.8.0 has none), this is IPv4 only, though the unit listens on IPv6 too: where

@@ -11,12 +11,13 @@
 //! The clip is driven only while flashrom has its pins enabled (`S_PIN_STATE`), and only
 //! once the camera module has lent the flash chip: the camera off and staying off, and the
 //! boot pin, already on the flash's DI, handed over as MOSI. Enabling powers the chip's VCC,
-//! then drives its WP and HOLD high for plain single-bit SPI that nothing can pause, then
-//! the bus; disabling, a client that leaves, or one quiet for [`IDLE_LIMIT`] puts every pin
-//! back to high-Z. On a camera's board, VCC is its 3.3 V rail and WP and HOLD are the SoC's
-//! quad data lines, so a backpack soldered to the flash leaves them all to the camera
-//! outside a session, and the camera boots as if it were not there. A clip on a bare chip
-//! can take its VCC from the unit's 3.3 V, with WP and HOLD tied to it, instead.
+//! then drives its HOLD high so that nothing can pause it, then the bus; disabling, a client
+//! that leaves, or one quiet for [`IDLE_LIMIT`] puts every pin back to high-Z. WP stays
+//! unconnected: a chip heeds it only to keep its status register locked, and only with quad
+//! mode off. On a camera's board, VCC is its 3.3 V rail and HOLD one of the SoC's quad data
+//! lines, so a backpack soldered to the flash leaves them to the camera outside a session,
+//! and the camera boots as if it were not there. A clip on a bare chip can take its VCC from
+//! the unit's 3.3 V, with HOLD tied to it, instead.
 //!
 //! The protocol is flashrom's own specification (serprog-protocol.rst), version 1, with the
 //! commands flashrom uses on an SPI-only programmer.
@@ -114,7 +115,6 @@ pub struct Pins {
     pub miso: i32,
     pub mosi: i32,
     pub vcc: i32,
-    pub wp: i32,
     pub hold: i32,
 }
 
@@ -131,7 +131,6 @@ pub fn start(
     clk: impl OutputPin + 'static,
     miso: impl InputPin + 'static,
     vcc: impl OutputPin + 'static,
-    wp: impl OutputPin + 'static,
     hold: impl OutputPin + 'static,
     camera: Arc<Camera>,
 ) -> Result<(), String> {
@@ -141,18 +140,17 @@ pub fn start(
         miso: i32::from(miso.pin()),
         mosi: camera.pins().1,
         vcc: i32::from(vcc.pin()),
-        wp: i32::from(wp.pin()),
         hold: i32::from(hold.pin()),
     };
     let failed = |err: EspError| format!("flash programmer: {err}");
-    for pin in [pins.cs, pins.clk, pins.miso, pins.vcc, pins.wp, pins.hold] {
+    for pin in [pins.cs, pins.clk, pins.miso, pins.vcc, pins.hold] {
         release(pin).map_err(failed)?;
     }
     let listener = TcpListener::bind((Ipv6Addr::UNSPECIFIED, PORT)).map_err(|err| format!("flash programmer: {err}"))?;
     let _ = PINS.set(pins);
     info!(
-        "serprog: flashrom on port {PORT}; clip CS GPIO{}, CLK GPIO{}, MISO GPIO{}, MOSI GPIO{}, VCC GPIO{}, WP GPIO{}, HOLD GPIO{}",
-        pins.cs, pins.clk, pins.miso, pins.mosi, pins.vcc, pins.wp, pins.hold
+        "serprog: flashrom on port {PORT}; clip CS GPIO{}, CLK GPIO{}, MISO GPIO{}, MOSI GPIO{}, VCC GPIO{}, HOLD GPIO{}",
+        pins.cs, pins.clk, pins.miso, pins.mosi, pins.vcc, pins.hold
     );
     crate::spawn_named(c"serprog", STACK, move || serve(&listener, &pins, &camera))
         .map_err(|err| format!("flash programmer: {err}"))
@@ -464,20 +462,19 @@ impl Drop for Bus<'_> {
     }
 }
 
-/// Powers the chip from its VCC pin, at full strength as it feeds the chip, then drives WP
-/// and HOLD high.
+/// Powers the chip from its VCC pin, at full strength as it feeds the chip, then drives HOLD
+/// high.
 fn take_chip(pins: &Pins) -> Result<(), EspError> {
     camera::configure(pins.vcc, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1)?;
     // SAFETY: the pin is configured just above.
     esp!(unsafe { sys::gpio_set_drive_capability(pins.vcc, sys::gpio_drive_cap_t_GPIO_DRIVE_CAP_3) })?;
     thread::sleep(POWER_UP);
-    camera::configure(pins.wp, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1)?;
     camera::configure(pins.hold, sys::gpio_mode_t_GPIO_MODE_OUTPUT, 1)
 }
 
-/// Lets go of WP and HOLD, then of VCC.
+/// Lets go of HOLD, then of VCC.
 fn release_chip(pins: &Pins) {
-    for pin in [pins.wp, pins.hold, pins.vcc] {
+    for pin in [pins.hold, pins.vcc] {
         if let Err(err) = release(pin) {
             warn!("serprog: GPIO{pin}: {err}");
         }
