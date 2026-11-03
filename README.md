@@ -16,6 +16,9 @@ nothing else attached:
 - **Findable like a camera.** A thingino-style Wi-Fi setup portal on first boot, then mDNS
   `_thingino._tcp` and a status page, which the
   [thingino app](https://github.com/thingino/thingino-app) lists and opens.
+- **Part of a bench.** The [hardware-development-lab](https://github.com/gtxaspec/hardware-development-lab)
+  relay panel finds units on its network and drives them next to its relay boards: see
+  [On a bench panel](#on-a-bench-panel).
 
 Nothing is stored on the unit: the client sends the loader pair with each bootstrap, and
 images stream through it, so the default build runs without PSRAM.
@@ -381,6 +384,17 @@ flashrom -p serprog:ip=<host>.local:8888 -w image.bin            # erases, write
 ```sh
 flashrom -p serprog:ip=<host>.local:8888 -l layout.txt -i uboot -N -w image.bin
 ```
+
+### On a bench panel
+
+The [hardware-development-lab](https://github.com/gtxaspec/hardware-development-lab) panel
+looks for `thingino-backpack-*` hosts among `_thingino._tcp` once a minute and adds each one
+it finds, so a unit on the panel's network shows up there by itself; one elsewhere is added
+by address. Each gets a card with the camera's power and boot pin, Enter bootrom, power
+cycle, the USB devices on the port and the console, and the panel's MCP servers and skills
+drive the unit the same way, flashing straight through its port 5050. The panel holds the
+console for all of its viewers at once and gives it up when another client takes it over,
+rather than taking it back.
 
 ### Firmware updates
 
