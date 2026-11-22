@@ -110,8 +110,15 @@ table.uarts { width: 100%; border-collapse: collapse; margin-top: .6rem; font-si
 table.uarts td, table.uarts th { padding: .45rem .5rem; border-top: 1px solid var(--line); text-align: left; vertical-align: middle; }
 table.uarts th { color: var(--ink2); font-weight: 500; font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; border-top: 0; }
 table.uarts tr.off td { opacity: .4; }
-table.uarts input { font: .85rem var(--sans); padding: .35rem .55rem; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-hi); width: 100%; min-width: 8rem; }
+table.uarts input[type=text] { font: .85rem var(--sans); padding: .35rem .55rem; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-hi); width: 100%; min-width: 8rem; }
 table.uarts code { color: var(--ink2); white-space: nowrap; }
+.switch { position: relative; display: inline-block; width: 38px; height: 22px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.switch span { position: absolute; inset: 0; border-radius: 99px; background: var(--s2); border: 1px solid var(--line); cursor: pointer; transition: background .15s; }
+.switch span::before { content: ""; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px; border-radius: 50%; background: var(--ink2); transition: transform .15s, background .15s; }
+.switch input:checked + span { background: var(--accent); border-color: var(--accent); }
+.switch input:checked + span::before { transform: translateX(16px); background: var(--on-accent); }
+.switch input:disabled + span { opacity: .55; cursor: default; }
 .card-h .end button { padding: .2rem .65rem; font-size: .8rem; }
 footer { text-align: center; color: var(--ink3); font-size: .875rem; padding: 0 1rem 1.5rem; }
 footer .v { color: var(--ink2); }
@@ -226,9 +233,9 @@ footer .v { color: var(--ink2); }
 
 <div class="pane" data-pane="settings"><div class="grid2">
 <section class="card wide">
-  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg><h2>UARTs</h2><span class="end"><span class="seg" id="uart-count"></span></span></div>
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg><h2>UARTs</h2></div>
   <div class="card-b">
-  <p class="muted">Up to three consoles, for a camera with more than one chip to watch: the SoC, a battery or motor MCU, a Wi-Fi chip. UART 2 and 3 use the flash clip's pins, so turning them on turns the flash programmer off; UART 3 also takes the backpack's own log UART. Changing the number restarts the backpack.</p>
+  <p class="muted">Up to three consoles, for a camera with more than one chip to watch: the SoC, a battery or motor MCU, a Wi-Fi chip. UART 2 and 3 use the flash clip's pins, so turning either on turns the flash programmer off; UART 3 also takes the backpack's own log UART. Turning one on or off restarts the backpack.</p>
   <table class="uarts" id="uart-table"></table>
   </div>
 </section>
@@ -340,12 +347,12 @@ function roles(p) {
   const add = (g, short, long, c) => { if (g !== undefined && g !== null) m[g] = { short, long, c }; };
   add(p.power, 'camera power', 'Camera power switch (high: on)', 'pwr');
   add(p.bootsel, 'BOOTSEL', 'Camera SoC BOOTSEL, on boards that bring it out', 'pwr');
-  const many = U.count > 1;
+  const many = uartsOn().length > 1;
   const n0 = many ? U.uarts[0].name + ' ' : 'UART ';
   add(p.tx, n0 + 'TX', 'UART 1 TX, to the ' + (many ? U.uarts[0].name : 'camera') + '\'s RX', 'uart');
   add(p.rx, n0 + 'RX', 'UART 1 RX, from the ' + (many ? U.uarts[0].name : 'camera') + '\'s TX', 'uart');
-  for (let i = 1; i < U.count; i++) {
-    const u = U.uarts[i];
+  for (const u of U.uarts.slice(1).filter((x) => x.on)) {
+    const i = u.i;
     add(u.tx, u.name + ' TX', 'UART ' + (i + 1) + ' TX, to the ' + u.name + '\'s RX', 'uart');
     add(u.rx, u.name + ' RX', 'UART ' + (i + 1) + ' RX, from the ' + u.name + '\'s TX', 'uart');
   }
@@ -539,7 +546,8 @@ function drawBoard() {
 let info = null;
 let camState = null;
 // The UARTs: how many are on, how many the chip has room for, and each one's settings.
-let U = { count: 1, max: 1, uarts: [] };
+let U = { uarts: [] };
+const uartsOn = () => U.uarts.filter((u) => u.on);
 const BAUDS = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000];
 
 function showTab(name) {
@@ -555,33 +563,31 @@ $('tabs').onclick = (e) => { const b = e.target.closest('button'); if (b) showTa
 
 async function loadUarts() {
   const r = await call('/api/uarts');
-  U = r.ok === false || !r.uarts ? { count: 1, max: 1, uarts: [{ name: 'Camera SoC', baud: 115200, tx: info.pins.tx, rx: info.pins.rx, port: info.ports.console }] } : r;
+  U = r.ok === false || !r.uarts ? { uarts: [{ on: true, name: 'Camera SoC', baud: 115200, tx: info.pins.tx, rx: info.pins.rx, port: info.ports.console }] } : r;
+  U.uarts.forEach((u, i) => { u.i = i; });
   renderUarts();
 }
 
 function renderUarts() {
-  const count = $('uart-count');
-  count.innerHTML = '';
-  for (let n = 1; n <= U.max; n++) count.insertAdjacentHTML('beforeend', '<button data-v="' + n + '">' + n + '</button>');
-  seg(count, String(U.count));
-  let h = '<tr><th>#</th><th>Name</th><th>Baud</th><th>Pins</th><th>Port</th></tr>';
+  let h = '<tr><th>On</th><th>#</th><th>Name</th><th>Baud</th><th>Pins</th><th>Port</th></tr>';
   U.uarts.forEach((u, i) => {
     const bauds = BAUDS.includes(u.baud) ? BAUDS : BAUDS.concat(u.baud).sort((a, b) => a - b);
-    h += '<tr class="' + (i < U.count ? '' : 'off') + '"><td>' + (i + 1) + '</td>'
-      + '<td><input data-name="' + i + '" value="' + esc(u.name) + '" maxlength="24" aria-label="UART ' + (i + 1) + ' name"></td>'
+    h += '<tr class="' + (u.on ? '' : 'off') + '"><td><label class="switch" title="' + (i ? 'Turn UART ' + (i + 1) + ' on or off' : 'The camera SoC\'s UART is always on') + '"><input type="checkbox" data-on="' + i + '"' + (u.on ? ' checked' : '') + (i ? '' : ' disabled') + ' aria-label="UART ' + (i + 1) + ' on"><span></span></label></td><td>' + (i + 1) + '</td>'
+      + '<td><input type="text" data-name="' + i + '" value="' + esc(u.name) + '" maxlength="24" aria-label="UART ' + (i + 1) + ' name"></td>'
       + '<td><select data-baud="' + i + '" aria-label="UART ' + (i + 1) + ' baud rate">' + bauds.map((b) => '<option' + (b === u.baud ? ' selected' : '') + '>' + b + '</option>').join('') + '</select></td>'
       + '<td><code>TX GPIO' + u.tx + ' · RX GPIO' + u.rx + '</code></td><td><code>' + u.port + '</code></td></tr>';
   });
   $('uart-table').innerHTML = h;
   // A socat line per UART on, each on its own port.
   const host = info.name + '.local';
-  $('console-cmds').innerHTML = U.count < 2 ? cmd('socat -,rawer,escape=0x1d tcp:' + host + ':' + info.ports.console)
-    : U.uarts.slice(0, U.count).map((u) => '<div class="muted" style="margin-top:.5rem">' + esc(u.name) + '</div>' + cmd('socat -,rawer,escape=0x1d tcp:' + host + ':' + u.port)).join('');
+  const on = uartsOn();
+  $('console-cmds').innerHTML = on.length < 2 ? cmd('socat -,rawer,escape=0x1d tcp:' + host + ':' + info.ports.console)
+    : on.map((u) => '<div class="muted" style="margin-top:.5rem">' + esc(u.name) + '</div>' + cmd('socat -,rawer,escape=0x1d tcp:' + host + ':' + u.port)).join('');
   const sw = $('term-uarts');
-  sw.innerHTML = U.uarts.slice(0, U.count).map((u, i) => '<button data-v="' + i + '">' + esc(u.name) + '</button>').join('');
-  sw.hidden = U.count < 2;
-  termShow(Math.min(T ? T.i : 0, U.count - 1));
-  const off = U.count > 1 || !info.pins.clip;
+  sw.innerHTML = on.map((u) => '<button data-v="' + u.i + '">' + esc(u.name) + '</button>').join('');
+  sw.hidden = on.length < 2;
+  termShow(T && U.uarts[T.i] && U.uarts[T.i].on ? T.i : 0);
+  const off = on.length > 1 || !info.pins.clip;
   $('flash-off').hidden = !off;
   $('flash-on').hidden = off;
   $('lent-badge').hidden = off;
@@ -589,18 +595,17 @@ function renderUarts() {
   $('pin-table').innerHTML = pinTable(info.pins, roles(info.pins));
 }
 
-$('uart-count').onclick = async (e) => {
-  const b = e.target.closest('button');
-  if (!b || b.classList.contains('sel')) return;
-  const n = Number(b.dataset.v);
-  const what = n > 1 ? ' UART ' + (n > 2 ? '2 and 3 take' : '2 takes') + ' the flash clip\'s pins, so the flash programmer goes off.' : ' The flash programmer comes back.';
-  if (!confirm('Turn ' + n + ' UART' + (n > 1 ? 's' : '') + ' on? The backpack restarts.' + what)) return;
-  const r = await act('/api/uarts?count=' + n);
-  if (r.ok) { U.count = n; renderUarts(); setTimeout(() => location.reload(), 12000); }
-};
 $('uart-table').addEventListener('change', async (e) => {
   const t = e.target;
-  if (t.dataset.name !== undefined) {
+  if (t.dataset.on !== undefined) {
+    const i = Number(t.dataset.on), on = t.checked;
+    const extras = U.uarts.filter((u, j) => j > 0 && (j === i ? on : u.on)).length;
+    const what = on ? (U.uarts.some((u, j) => j > 0 && u.on) ? '' : ' It takes the flash clip\'s pins, so the flash programmer goes off.')
+      : (extras ? '' : ' The flash programmer comes back.');
+    if (!confirm('Turn UART ' + (i + 1) + ' (' + U.uarts[i].name + ') ' + (on ? 'on' : 'off') + '? The backpack restarts.' + what)) { t.checked = !on; return; }
+    const r = await act('/api/uarts?uart=' + i + '&on=' + (on ? 1 : 0));
+    if (r.ok) { U.uarts[i].on = on; renderUarts(); setTimeout(() => location.reload(), 12000); } else t.checked = !on;
+  } else if (t.dataset.name !== undefined) {
     const i = Number(t.dataset.name), name = t.value.trim() || 'UART ' + (i + 1);
     const r = await act('/api/uarts?uart=' + i + '&name=' + encodeURIComponent(name));
     if (r.ok) { U.uarts[i].name = name; renderUarts(); }
