@@ -295,6 +295,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
 <p>For tools that set the baud rate or send a break, RFC 2217 on port {rfc2217}: <code>rfc2217://{name}.local:{rfc2217}</code>. Its DTR holds the boot pin and RTS cuts the power, as esptool's auto-reset drives an ESP32's IO0 and EN; both or neither asserted, as a terminal opens, leaves the camera alone.</p>
 <p>The camera's flash chip, through a SOIC-8 clip, for flashrom 1.4.0 or later on port {serprog}:</p>
 <pre>flashrom -p serprog:ip={name}.local:{serprog} -r dump.bin</pre>
+{diagram}
 <p class="buttons">VCC <select id="flash-vcc" title="Who powers the flash chip during flashrom"><option value="driven">from the backpack</option><option value="alone">from the camera</option></select> HOLD <select id="flash-hold" title="Whether the backpack holds HOLD high during flashrom"><option value="driven">driven high</option><option value="alone">left alone</option></select> <button id="flash-set" title="Set what the flash programmer drives, from the next flashrom run on">Set</button></p>
 <p class="dim">VCC from the backpack needs the camera off. From the camera is for boards whose flash shares the SoC's 3.3 V rail, which the backpack's VCC would boot: each flashrom run then power-cycles the camera with the boot pin held, so its bootrom leaves the flash alone, and switches it off after. HOLD can be left alone for chips in quad mode, which ignore it.</p>
 <p id="flash-said"></p>
@@ -339,6 +340,7 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
         tx = console::pins().0,
         rx = console::pins().1,
         serprog = serprog::PORT,
+        diagram = serprog::pins().map_or_else(String::new, clip_diagram),
         clip = serprog::pins().map_or_else(String::new, |clip| format!(
             "<tr><td>GPIO{}</td><td>flash CS, pin 1, through the clip</td></tr>\n\
              <tr><td>GPIO{}</td><td>flash DO, pin 2</td></tr>\n\
@@ -348,6 +350,49 @@ td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
             clip.cs, clip.miso, clip.clk, clip.vcc, clip.hold
         )),
     )
+}
+
+/// The clip on the chip, seen from above, each pin labelled with the GPIO it goes to.
+fn clip_diagram(clip: serprog::Pins) -> String {
+    let left = [
+        ("CS", format!("GPIO{}", clip.cs), "#1f5fbf"),
+        ("DO", format!("GPIO{}", clip.miso), "#1f5fbf"),
+        ("WP", "not connected".to_owned(), "#999"),
+        ("GND", "GND".to_owned(), "#222"),
+    ];
+    let right = [
+        ("VCC", format!("GPIO{}", clip.vcc), "#c62828"),
+        ("HOLD", format!("GPIO{}", clip.hold), "#1f5fbf"),
+        ("CLK", format!("GPIO{}", clip.clk), "#1f5fbf"),
+        ("DI", format!("GPIO{}", clip.mosi), "#1f5fbf"),
+    ];
+    let mut svg = String::from(
+        "<svg viewBox=\"0 0 600 300\" style=\"max-width:600px;width:100%\" font-family=\"sans-serif\" role=\"img\" \
+         aria-label=\"SOIC-8 flash, top view, with the backpack pin for each clip pin\">\
+         <rect width=\"600\" height=\"300\" rx=\"10\" fill=\"#fff\"/>\
+         <rect x=\"220\" y=\"30\" width=\"160\" height=\"220\" rx=\"6\" fill=\"#2b2b2b\"/>\
+         <circle cx=\"242\" cy=\"52\" r=\"7\" fill=\"#d9d9d9\"/>\
+         <text x=\"300\" y=\"145\" text-anchor=\"middle\" font-size=\"14\" fill=\"#bbb\">flash chip</text>\
+         <text x=\"300\" y=\"165\" text-anchor=\"middle\" font-size=\"12\" fill=\"#999\">dot = pin 1</text>",
+    );
+    for (row, ((ln, lpin, lcolor), (rn, rpin, rcolor))) in left.iter().zip(&right).enumerate() {
+        let y = 58 + 55 * row;
+        svg += &format!(
+            "<rect x=\"192\" y=\"{leg}\" width=\"28\" height=\"14\" fill=\"#b0b0b0\"/>\
+             <rect x=\"380\" y=\"{leg}\" width=\"28\" height=\"14\" fill=\"#b0b0b0\"/>\
+             <text x=\"230\" y=\"{num}\" font-size=\"13\" font-weight=\"bold\" fill=\"#fff\">{l}</text>\
+             <text x=\"362\" y=\"{num}\" font-size=\"13\" font-weight=\"bold\" fill=\"#fff\">{r}</text>\
+             <text x=\"180\" y=\"{num}\" text-anchor=\"end\" font-size=\"15\" font-weight=\"bold\" fill=\"{lcolor}\">{ln} \u{b7} {lpin}</text>\
+             <text x=\"420\" y=\"{num}\" font-size=\"15\" font-weight=\"bold\" fill=\"{rcolor}\">{rn} \u{b7} {rpin}</text>",
+            leg = y,
+            num = y + 12,
+            l = row + 1,
+            r = 8 - row,
+        );
+    }
+    svg += "<text x=\"300\" y=\"285\" text-anchor=\"middle\" font-size=\"12\" fill=\"#555\">\
+            The clip's red wire goes on pin 1. Pins count down the left from the dot, then up the right.</text></svg>";
+    svg
 }
 
 /// Where the camera's USB lands: GPIO pins on the full-speed chips, a port of its own on the
