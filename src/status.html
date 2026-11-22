@@ -40,6 +40,8 @@ header { border-bottom: 1px solid var(--line); }
 main { max-width: 1180px; margin: 0 auto; padding: 1rem; }
 /* Columns rather than a grid: each card sits right under the one above it, whatever their heights. */
 .cols { columns: 3 330px; column-gap: 1rem; }
+/* Inline blocks keep their bottom margin at a column's end, where a block's is dropped. */
+.cols > .card { display: inline-block; width: 100%; }
 .card { break-inside: avoid; margin: 0 0 1rem; background: var(--s1); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .card-h { display: flex; align-items: center; gap: .55rem; padding: .6rem 1rem; background: var(--s2); border-bottom: 1px solid var(--line); }
 .card-h h2 { margin: 0; font-size: 1rem; font-weight: 600; color: var(--accent); }
