@@ -1,9 +1,12 @@
 //! Being findable the way a thingino camera is: an mDNS announcement of `_thingino._tcp`,
 //! which the thingino app browses (its instance name is taken for the hostname, as a
 //! camera's mdnsd publishes it), and a page on port 80, which the app's hub opens when the
-//! entry is tapped. The page says how to reach the dfu-remote daemon and the console, and
-//! drives the camera's power and boot pin through `/api/camera`:
+//! entry is tapped. The page is static: it says how to reach the dfu-remote daemon, the
+//! console and the flash programmer, draws the wiring, and drives the camera, all through
+//! the API below.
 //!
+//! * `GET /api/info`: the unit's name, chip, firmware version, ports, addresses and the
+//!   GPIOs in use, as JSON.
 //! * `GET /api/camera`: power, boot pin, USB devices enumerated and their VID:PID, how
 //!   long a USB transfer has gone unanswered, power cycles done for recovery, and BOOTSEL's
 //!   sense, as JSON.
@@ -82,9 +85,14 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
     let pins = camera.pins();
     let has_wifi = wifi.is_some();
     server
-        .fn_handler("/", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
+        .fn_handler("/", Method::Get, |req: Request<&mut EspHttpConnection<'_>>| {
             req.into_response(200, None, &[("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])?
-                .write_all(page(&name, pins, has_wifi).as_bytes())
+                .write_all(PAGE.as_bytes())
+        })
+        .map_err(|err| format!("status page: {err}"))?;
+    server
+        .fn_handler("/api/info", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
+            json(req, &info_json(&name, pins, has_wifi))
         })
         .map_err(|err| format!("status page: {err}"))?;
     if let Some(Wifi {
@@ -251,290 +259,49 @@ pub(crate) fn endpoints() -> Vec<String> {
     out
 }
 
-/// `camera` is the power and boot pin GPIOs; `wifi`, whether the unit is on Wi-Fi, with
-/// settings of its own.
-fn page(hostname: &str, camera: (i32, i32, i32), wifi: bool) -> String {
-    let name = escape(hostname);
-    let endpoints = endpoints();
-    // The mDNS name survives a DHCP renumbering and an ISP prefix change; the addresses
-    // below it do not.
-    let first = format!("{name}.local:{DEFAULT_PORT}");
-    let list: String = endpoints.iter().map(|at| format!("<li><code>{}</code></li>", escape(at))).collect();
-    format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{name}</title>
-<style>
-body {{ font-family: system-ui, sans-serif; margin: 0 auto; max-width: 34rem; padding: 1rem; background: #111; color: #eee; }}
-h1 {{ font-size: 1.3rem; margin: 0 0 .25rem; }}
-.dim {{ color: #999; margin: 0 0 1rem; }}
-pre, code {{ background: #1c1c1c; border-radius: .3rem; }}
-pre {{ padding: .6rem; overflow-x: auto; }}
-code {{ padding: 0 .2rem; }}
-h2 {{ font-size: 1.1rem; margin: 1.5rem 0 .25rem; }}
-table {{ border-collapse: collapse; }}
-td {{ padding: .15rem .8rem .15rem 0; vertical-align: top; }}
-td:first-child {{ white-space: nowrap; font-family: ui-monospace, monospace; }}
-.buttons button, .buttons select, .buttons input::file-selector-button {{ margin: 0 .25rem .5rem 0; padding: .45rem .7rem; font-size: .95rem; border-radius: .4rem; border: 1px solid #444; background: #1c1c1c; color: #eee; cursor: pointer; }}
-.buttons input {{ color: #eee; }}
-</style>
-</head>
-<body>
-<h1>{name}</h1>
-<p class="dim">thingino backpack {version} on {chip}</p>
-<p>The camera on this backpack is flashed through its dfu-remote daemon. From a computer:</p>
-<pre>thingino-dfu --host {first} -l</pre>
-<p>In the web flasher, choose remote mode and enter <code>{first}</code>.</p>
-<p>Or by address:</p>
-<ul>{list}</ul>
-<p>The camera's serial console is on port {console}, raw, one client at a time (a new one takes over). Ctrl-] leaves:</p>
-<pre>socat -,rawer,escape=0x1d tcp:{name}.local:{console}</pre>
-<p>For tools that set the baud rate or send a break, RFC 2217 on port {rfc2217}: <code>rfc2217://{name}.local:{rfc2217}</code>. Its DTR holds the boot pin and RTS cuts the power, as esptool's auto-reset drives an ESP32's IO0 and EN; both or neither asserted, as a terminal opens, leaves the camera alone.</p>
-<p>The camera's flash chip, through a SOIC-8 clip, for flashrom 1.4.0 or later on port {serprog}:</p>
-<pre>flashrom -p serprog:ip={name}.local:{serprog} -r dump.bin</pre>
-{diagram}
-<p class="buttons">VCC <select id="flash-vcc" title="Who powers the flash chip during flashrom"><option value="driven">from the backpack</option><option value="alone">from the camera</option></select> HOLD <select id="flash-hold" title="Whether the backpack holds HOLD high during flashrom"><option value="driven">driven high</option><option value="alone">left alone</option></select> <button id="flash-set" title="Set what the flash programmer drives, from the next flashrom run on">Set</button></p>
-<p class="dim">VCC from the backpack needs the camera off. From the camera is for boards whose flash shares the SoC's 3.3 V rail, which the backpack's VCC would boot: each flashrom run then power-cycles the camera with the boot pin held, so its bootrom leaves the flash alone, and switches it off after. HOLD can be left alone for chips in quad mode, which ignore it.</p>
-<p id="flash-said"></p>
-<h2>Camera</h2>
-<p id="cam" class="dim">&nbsp;</p>
-<p class="buttons"><button data-a="power-cycle" title="Cut the camera's power for a second, then turn it back on">Power cycle</button> <button data-a="bootrom" title="Hold the boot pin through a power cycle, and let go once the bootrom shows up on USB">Enter bootrom</button> <button data-a="power-off" title="Cut the camera's power">Power off</button> <button data-a="power-on" title="Turn the camera's power on">Power on</button> <button data-a="boot-hold" title="Hold the boot pin and BOOTSEL, so the camera's next power-on boots from USB">Hold boot pin</button> <button data-a="boot-release" title="Let go of the boot pin">Release boot pin</button></p>
-<p class="dim">Enter bootrom holds the boot pin through a power cycle, so the camera boots from USB, and lets go of the pin once the bootrom enumerates: then <code>thingino-dfu -b</code> brings up the DFU gadget.</p>
-<p class="buttons">BOOTSEL <select id="bootsel" title="What BOOTSEL does to boot from USB"><option value="low">pulled low</option><option value="high">driven high</option></select> <button id="bootsel-set" title="Set what BOOTSEL does to boot from USB, now and on every boot after">Set</button></p>
-<p class="dim">For boards that bring out the SoC's boot select: it moves with the boot pin. Driven high, it is only driven while the backpack has the camera powered.</p>
-<p class="buttons">USB <select id="usb-port" title="Whether the backpack holds the camera's USB lines"><option value="on">connected</option><option value="off">disconnected</option></select> <button id="usb-set" title="Connect or disconnect the backpack's USB port, now and on every boot after">Set</button></p>
-<p class="dim">Disconnected, the backpack powers its USB port down and lets go of the lines, for a camera whose SoC hosts a USB Wi-Fi module on them. Entering the bootrom needs it connected.</p>
-<p id="said"></p>
-<h2>Wiring</h2>
-<table>
-<tr><td>GPIO{power}</td><td>camera power, through a MOSFET module (high: on)</td></tr>
-<tr><td>GPIO{boot}</td><td>camera flash DI, pin 5 of an SOIC-8 NOR; open-drain, pulled low to boot from USB, and the flash programmer's MOSI</td></tr>
-<tr><td>GPIO{bootsel}</td><td>camera SoC BOOTSEL, on boards that bring it out; pulled low or driven high to boot from USB, as set above</td></tr>
-<tr><td>GPIO{tx}</td><td>camera UART RX (the backpack's TX)</td></tr>
-<tr><td>GPIO{rx}</td><td>camera UART TX (the backpack's RX)</td></tr>
-<tr><td>{usb}</td><td>camera USB ({usb_port})</td></tr>
-<tr><td>GND</td><td>camera ground</td></tr>
-{clip}
-</table>
-{wifi}
-{firmware}
-{script}
-</body>
-</html>
-"#,
-        version = escape(&build_id()),
-        chip = chip(),
-        usb = USB_PINS.0,
-        usb_port = USB_PINS.1,
-        console = console::PORT,
-        rfc2217 = console::RFC2217_PORT,
-        script = CAMERA_SCRIPT,
-        wifi = if wifi { WIFI_SECTION } else { "" },
-        firmware = FIRMWARE_SECTION,
-        power = camera.0,
-        boot = camera.1,
-        bootsel = camera.2,
-        tx = console::pins().0,
-        rx = console::pins().1,
-        serprog = serprog::PORT,
-        diagram = serprog::pins().map_or_else(String::new, clip_diagram),
-        clip = serprog::pins().map_or_else(String::new, |clip| format!(
-            "<tr><td>GPIO{}</td><td>flash CS, pin 1, through the clip</td></tr>\n\
-             <tr><td>GPIO{}</td><td>flash DO, pin 2</td></tr>\n\
-             <tr><td>GPIO{}</td><td>flash CLK, pin 6</td></tr>\n\
-             <tr><td>GPIO{}</td><td>flash VCC, pin 8, during flashrom only, from the backpack (the 3V3 pin instead, on a bare chip)</td></tr>\n\
-             <tr><td>GPIO{}</td><td>flash HOLD, pin 7, high during flashrom only, when driven (WP, pin 3, unconnected)</td></tr>",
-            clip.cs, clip.miso, clip.clk, clip.vcc, clip.hold
-        )),
-    )
-}
+/// The page: static, as everything that varies comes from `/api/info` and the others.
+const PAGE: &str = include_str!("status.html");
 
-/// The clip on the chip, seen from above, each pin labelled with the GPIO it goes to.
-fn clip_diagram(clip: serprog::Pins) -> String {
-    let left = [
-        ("CS", format!("GPIO{}", clip.cs), "#1f5fbf"),
-        ("DO", format!("GPIO{}", clip.miso), "#1f5fbf"),
-        ("WP", "not connected".to_owned(), "#999"),
-        ("GND", "GND".to_owned(), "#222"),
-    ];
-    let right = [
-        ("VCC", format!("GPIO{}", clip.vcc), "#c62828"),
-        ("HOLD", format!("GPIO{}", clip.hold), "#1f5fbf"),
-        ("CLK", format!("GPIO{}", clip.clk), "#1f5fbf"),
-        ("DI", format!("GPIO{}", clip.mosi), "#1f5fbf"),
-    ];
-    let mut svg = String::from(
-        "<svg viewBox=\"0 0 600 300\" style=\"max-width:600px;width:100%\" font-family=\"sans-serif\" role=\"img\" \
-         aria-label=\"SOIC-8 flash, top view, with the backpack pin for each clip pin\">\
-         <rect width=\"600\" height=\"300\" rx=\"10\" fill=\"#fff\"/>\
-         <rect x=\"220\" y=\"30\" width=\"160\" height=\"220\" rx=\"6\" fill=\"#2b2b2b\"/>\
-         <circle cx=\"242\" cy=\"52\" r=\"7\" fill=\"#d9d9d9\"/>\
-         <text x=\"300\" y=\"145\" text-anchor=\"middle\" font-size=\"14\" fill=\"#bbb\">flash chip</text>\
-         <text x=\"300\" y=\"165\" text-anchor=\"middle\" font-size=\"12\" fill=\"#999\">dot = pin 1</text>",
+/// The unit's facts for the page: its names, ports and addresses, and the GPIOs in use.
+/// `camera` is the power, boot pin and BOOTSEL GPIOs.
+fn info_json(hostname: &str, camera: (i32, i32, i32), wifi: bool) -> String {
+    let (tx, rx) = console::pins();
+    let endpoints = endpoints().iter().map(|at| format!(r#""{}""#, json_escape(at))).collect::<Vec<_>>().join(",");
+    let clip = serprog::pins().map_or_else(
+        || "null".to_owned(),
+        |clip| {
+            format!(
+                r#"{{"cs":{},"miso":{},"clk":{},"mosi":{},"vcc":{},"hold":{}}}"#,
+                clip.cs, clip.miso, clip.clk, clip.mosi, clip.vcc, clip.hold
+            )
+        },
     );
-    for (row, ((ln, lpin, lcolor), (rn, rpin, rcolor))) in left.iter().zip(&right).enumerate() {
-        let y = 58 + 55 * row;
-        svg += &format!(
-            "<rect x=\"192\" y=\"{leg}\" width=\"28\" height=\"14\" fill=\"#b0b0b0\"/>\
-             <rect x=\"380\" y=\"{leg}\" width=\"28\" height=\"14\" fill=\"#b0b0b0\"/>\
-             <text x=\"230\" y=\"{num}\" font-size=\"13\" font-weight=\"bold\" fill=\"#fff\">{l}</text>\
-             <text x=\"362\" y=\"{num}\" font-size=\"13\" font-weight=\"bold\" fill=\"#fff\">{r}</text>\
-             <text x=\"180\" y=\"{num}\" text-anchor=\"end\" font-size=\"15\" font-weight=\"bold\" fill=\"{lcolor}\">{ln} \u{b7} {lpin}</text>\
-             <text x=\"420\" y=\"{num}\" font-size=\"15\" font-weight=\"bold\" fill=\"{rcolor}\">{rn} \u{b7} {rpin}</text>",
-            leg = y,
-            num = y + 12,
-            l = row + 1,
-            r = 8 - row,
-        );
-    }
-    svg += "<text x=\"300\" y=\"285\" text-anchor=\"middle\" font-size=\"12\" fill=\"#555\">\
-            The clip's red wire goes on pin 1. Pins count down the left from the dot, then up the right.</text></svg>";
-    svg
+    format!(
+        r#"{{"name":"{}","chip":"{}","version":"{}","wifi":{wifi},"ports":{{"dfu":{DEFAULT_PORT},"console":{},"rfc2217":{},"serprog":{}}},"endpoints":[{endpoints}],"pins":{{"power":{},"boot":{},"bootsel":{},"tx":{tx},"rx":{rx},{USB_PINS},"clip":{clip}}}}}"#,
+        json_escape(hostname),
+        json_escape(&chip()),
+        json_escape(&build_id()),
+        console::PORT,
+        console::RFC2217_PORT,
+        serprog::PORT,
+        camera.0,
+        camera.1,
+        camera.2,
+    )
 }
 
 /// Where the camera's USB lands: GPIO pins on the full-speed chips, a port of its own on the
 /// P4's high-speed controller.
 #[cfg(not(esp32p4))]
-const USB_PINS: (&str, &str) = ("GPIO19, GPIO20", "D-, D+ of the native USB port");
+const USB_PINS: &str = r#""usb_dm":19,"usb_dp":20,"usb":"GPIO19, GPIO20""#;
 #[cfg(esp32p4)]
-const USB_PINS: (&str, &str) = ("USB 2.0 HS", "the high-speed OTG port");
+const USB_PINS: &str = r#""usb":"USB 2.0 HS""#;
 
 /// The chip ESP-IDF was built for, `esp32s3` and the like.
 fn chip() -> String {
     CStr::from_bytes_until_nul(sys::CONFIG_IDF_TARGET)
         .map_or_else(|_| "an ESP32".into(), |chip| chip.to_string_lossy().into_owned())
 }
-
-/// The Wi-Fi builds' settings: the radio's TX power, and going back to the setup portal.
-const WIFI_SECTION: &str = r#"<h2>Wi-Fi</h2>
-<p class="buttons">TX power <select id="tx-power" title="The most the radio transmits at">
-<option value="20">20 dBm, full</option><option value="19">19 dBm</option><option value="18">18 dBm</option><option value="17">17 dBm</option><option value="16">16 dBm</option><option value="15">15 dBm</option><option value="14">14 dBm</option><option value="13">13 dBm</option><option value="12">12 dBm</option><option value="11">11 dBm</option><option value="10">10 dBm</option><option value="9">9 dBm</option><option value="8">8 dBm</option><option value="7">7 dBm</option><option value="6">6 dBm</option><option value="5">5 dBm</option><option value="4">4 dBm</option><option value="3">3 dBm</option><option value="2">2 dBm</option>
-</select> <button id="tx-set" title="Set the TX power now and on every boot after">Set</button></p>
-<p class="dim">Lower it for a supply that browns out when the radio transmits, or for flash reads through a clip that come back wrong.</p>
-<p id="tx-said"></p>
-<p>Forget this network, the hostname and the TX power, and restart into the setup portal, as on first boot.</p>
-<p class="buttons"><button id="wifi-reset" title="Forget the network, the hostname and the TX power, and restart into the setup portal">Reset Wi-Fi</button></p>
-<p id="reset-said"></p>
-<script>
-{
-  const tx = document.getElementById('tx-power');
-  const said = document.getElementById('tx-said');
-  fetch('/api/wifi').then((r) => r.json()).then((w) => {
-    if (w.tx_dbm !== null) tx.value = String(w.tx_dbm);
-    if (w.brownout) said.textContent = 'This boot followed a brownout, so the radio stays at 13 dBm or less until the next reset.';
-  }).catch(() => {});
-  document.getElementById('tx-set').onclick = () => {
-    said.textContent = 'Setting the TX power...';
-    fetch('/api/wifi?tx_dbm=' + tx.value, { method: 'POST' }).then((r) => r.json())
-      .then((r) => { said.textContent = r.ok ? r.message : r.error; })
-      .catch(() => { said.textContent = 'The backpack did not answer.'; });
-  };
-}
-document.getElementById('wifi-reset').onclick = () => {
-  if (!confirm('Forget the Wi-Fi settings and restart into the setup portal? The backpack leaves this network.')) return;
-  const said = document.getElementById('reset-said');
-  fetch('/api/wifi-reset', { method: 'POST' }).then((r) => r.json())
-    .then((r) => { said.textContent = r.ok ? r.message : r.error; })
-    .catch(() => { said.textContent = 'The backpack did not answer.'; });
-};
-</script>"#;
-
-/// What runs, and an upload of a release's app image to update it.
-const FIRMWARE_SECTION: &str = r#"<h2>Firmware</h2>
-<p id="fw-now" class="dim">&nbsp;</p>
-<p class="buttons"><input type="file" id="fw-file" accept=".bin"> <button id="fw-send" title="Write the chosen firmware to the slot not running, and restart into it">Update</button></p>
-<p class="dim">A release's <code>-app.bin</code> for this chip. The backpack restarts into it, and goes back to the firmware it runs now by itself if the new one is not on the network within five minutes.</p>
-<p id="fw-said"></p>
-<script>
-{
-  const now = document.getElementById('fw-now');
-  const said = document.getElementById('fw-said');
-  const show = () => fetch('/api/ota').then((r) => r.json())
-    .then((o) => {
-      now.textContent = 'Running ' + o.version + ' from ' + o.slot + ', ' + o.state + '.';
-      if (o.state === 'on probation') setTimeout(show, 3000);
-      return true;
-    })
-    .catch(() => false);
-  show();
-  document.getElementById('fw-send').onclick = () => {
-    const file = document.getElementById('fw-file').files[0];
-    if (!file) { said.textContent = 'Choose a firmware file first.'; return; }
-    if (!confirm('Update the backpack with ' + file.name + '? It restarts into the new firmware.')) return;
-    const x = new XMLHttpRequest();
-    x.open('POST', '/api/ota');
-    x.upload.onprogress = (e) => {
-      if (e.lengthComputable) said.textContent = e.loaded < e.total
-        ? 'Sending, ' + Math.floor(100 * e.loaded / e.total) + '%...' : 'Writing and checking...';
-    };
-    x.onload = () => {
-      let r;
-      try { r = JSON.parse(x.responseText); } catch (e) { r = { ok: false, error: 'The backpack answered ' + x.status + '.' }; }
-      said.textContent = r.ok ? r.message : r.error;
-      if (!r.ok) return;
-      // The page comes back once the new firmware answers.
-      const wait = () => setTimeout(() => show().then((up) => (up ? location.reload() : wait())), 2000);
-      setTimeout(wait, 4000);
-    };
-    x.onerror = () => { said.textContent = 'The upload failed.'; };
-    x.send(file);
-  };
-}
-</script>"#;
-
-/// The camera section's buttons and its state, refreshed every few seconds.
-const CAMERA_SCRIPT: &str = r"<script>
-const $ = (id) => document.getElementById(id);
-let bootselShown = false;
-let usbShown = false;
-function show() {
-  fetch('/api/camera').then((r) => r.json()).then((s) => {
-    // Once, so a choice being made is not undone.
-    if (!bootselShown) { $('bootsel').value = s.bootsel; bootselShown = true; }
-    if (!usbShown) { $('usb-port').value = s.usb_port; usbShown = true; }
-    $('cam').textContent = 'Power ' + s.power + ', boot pin ' + s.boot_pin + ', ' + s.usb_devices + ' USB device(s)'
-      + (s.usb.length ? ' (' + s.usb.join(', ') + ')' : '')
-      + (s.usb_port === 'off' ? ', USB disconnected' : '')
-      + (s.stuck_s !== null ? ', a USB transfer unanswered for ' + s.stuck_s + ' s' : '')
-      + (s.recoveries ? ', ' + s.recoveries + ' recovery power cycle(s)' : '')
-      + (s.flash_lent ? ', flash chip lent to flashrom' : '');
-  }).catch(() => { $('cam').textContent = 'The backpack did not answer.'; });
-}
-for (const b of document.querySelectorAll('button[data-a]')) {
-  b.onclick = () => {
-    $('said').textContent = b.textContent + '...';
-    fetch('/api/camera?action=' + b.dataset.a, { method: 'POST' }).then((r) => r.json())
-      .then((r) => { $('said').textContent = r.ok ? r.message : r.error; show(); })
-      .catch(() => { $('said').textContent = 'The backpack did not answer.'; });
-  };
-}
-$('bootsel-set').onclick = () => {
-  $('said').textContent = 'Setting BOOTSEL...';
-  fetch('/api/camera?bootsel=' + $('bootsel').value, { method: 'POST' }).then((r) => r.json())
-    .then((r) => { $('said').textContent = r.ok ? r.message : r.error; })
-    .catch(() => { $('said').textContent = 'The backpack did not answer.'; });
-};
-$('usb-set').onclick = () => {
-  $('said').textContent = 'Setting USB...';
-  fetch('/api/camera?usb_port=' + $('usb-port').value, { method: 'POST' }).then((r) => r.json())
-    .then((r) => { $('said').textContent = r.ok ? r.message : r.error; show(); })
-    .catch(() => { $('said').textContent = 'The backpack did not answer.'; });
-};
-fetch('/api/flash').then((r) => r.json()).then((f) => { $('flash-vcc').value = f.vcc; $('flash-hold').value = f.hold; })
-  .catch(() => {});
-$('flash-set').onclick = () => {
-  $('flash-said').textContent = 'Setting the flash programmer...';
-  fetch('/api/flash?vcc=' + $('flash-vcc').value + '&hold=' + $('flash-hold').value, { method: 'POST' })
-    .then((r) => r.json())
-    .then((r) => { $('flash-said').textContent = r.ok ? r.message : r.error; })
-    .catch(() => { $('flash-said').textContent = 'The backpack did not answer.'; });
-};
-show();
-setInterval(show, 3000);
-</script>";
 
 fn camera_json(status: &camera::Status) -> String {
     format!(
@@ -578,8 +345,4 @@ fn json(req: Request<&mut EspHttpConnection<'_>>, body: &str) -> Result<(), EspI
 
 fn json_escape(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }

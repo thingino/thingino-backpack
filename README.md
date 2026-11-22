@@ -97,8 +97,9 @@ images stream through it, so the default build runs without PSRAM.
   HOLD instead, and the log is output only. Boards with a USB-UART bridge bring it out
   there; the S2 Mini has neither the bridge nor the pins. The camera's USB port is never a
   console.
-- The pins are set in `src/main.rs`, per chip; the status page lists the ones in use. The
-  flash programmer's clip has pins of its own, in [Flash chip](#flash-chip).
+- The pins are set in `src/main.rs`, per chip. The status page draws them on the board,
+  for the DevKitC-1, S3 Super Mini, XIAO ESP32S3 and S2 Mini, and lists them for any
+  other. The flash programmer's clip has pins of its own, in [Flash chip](#flash-chip).
 
 ## Flashing a release
 
@@ -181,14 +182,14 @@ and restarts into the setup portal. Erasing the NVS partition (`esptool.py erase
 
 ## Using it
 
-| Port     | Service                                                           |
-|----------|-------------------------------------------------------------------|
-| 80       | Status page, `/api/camera`, `/api/flash`, `/api/wifi`, `/api/ota` |
-| 2217     | Camera console, RFC 2217                                          |
-| 3000     | Camera console, raw                                               |
-| 5050     | thingino-dfu daemon (`dfu-remote`)                                |
-| 8888     | Flash programmer, flashrom's serprog (IPv4 only, for now)         |
-| 5353/udp | mDNS: the hostname, and `_thingino._tcp` for the thingino app     |
+| Port     | Service                                                                         |
+|----------|---------------------------------------------------------------------------------|
+| 80       | Status page, `/api/info`, `/api/camera`, `/api/flash`, `/api/wifi`, `/api/ota`  |
+| 2217     | Camera console, RFC 2217                                                        |
+| 3000     | Camera console, raw                                                             |
+| 5050     | thingino-dfu daemon (`dfu-remote`)                                              |
+| 8888     | Flash programmer, flashrom's serprog (IPv4 only, for now)                       |
+| 5353/udp | mDNS: the hostname, and `_thingino._tcp` for the thingino app                   |
 
 `<host>` below is the hostname, as `<host>.local`, or an address.
 

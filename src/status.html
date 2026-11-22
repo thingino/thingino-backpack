@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>thingino backpack</title>
+<style>
+:root {
+  --bg: #0d1117; --s1: #161b22; --s2: #21262d; --line: #30363d;
+  --ink: #c9d1d9; --ink-hi: #e6edf3; --ink2: #8b949e; --ink3: #6e7681;
+  --accent: #ff8c00; --accent-hi: #ff9e2c; --on-accent: #0d1117;
+  --good: #3fb950; --warn: #d29922; --crit: #f85149;
+  --r-pwr: #ff8c00; --r-uart: #199e70; --r-usb: #3987e5; --r-flash: #d55181; --r-vcc: #f85149; --r-gnd: #8b949e;
+  --board: #1b2a1f; --board-edge: #2f4a35; --pad: #c9a227;
+  --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f8fa; --s1: #ffffff; --s2: #f0f2f5; --line: #d0d7de;
+    --ink: #1f2328; --ink-hi: #0d1117; --ink2: #59636e; --ink3: #818b98;
+    --accent: #e07800; --accent-hi: #c96b00; --on-accent: #ffffff;
+    --board: #2a5a34; --board-edge: #1f4527;
+    color-scheme: light;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+.bar { max-width: 1180px; margin: 0 auto; padding: .7rem 1rem; display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
+.logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; font-weight: 800; }
+.bar h1 { font-size: 1.05rem; margin: 0; color: var(--ink-hi); font-weight: 650; }
+.bar .meta { color: var(--ink2); font-size: .85rem; }
+.pill { margin-left: auto; display: inline-flex; align-items: center; gap: .4rem; padding: .2rem .65rem; border-radius: 99px; background: var(--s2); border: 1px solid var(--line); font-size: .8rem; color: var(--ink2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink3); }
+.dot.on { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent); }
+.dot.off { background: var(--crit); }
+main { max-width: 1180px; margin: 0 auto; padding: 1rem; display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); align-items: start; }
+.card { background: var(--s1); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem 1.1rem; min-width: 0; }
+.card.wide { grid-column: 1 / -1; }
+.card h2 { margin: 0 0 .75rem; font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); display: flex; align-items: center; gap: .5rem; }
+.card h2 .badge { margin-left: auto; text-transform: none; letter-spacing: 0; }
+p { margin: .4rem 0; }
+.muted { color: var(--ink2); font-size: .87rem; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: .5rem; margin-bottom: .9rem; }
+.stat { background: var(--s2); border-radius: 8px; padding: .5rem .7rem; }
+.stat .k { font-size: .72rem; color: var(--ink2); text-transform: uppercase; letter-spacing: .06em; }
+.stat .v { font-size: 1rem; color: var(--ink-hi); font-weight: 600; overflow-wrap: anywhere; }
+.badge { display: inline-block; padding: .05rem .5rem; border-radius: 99px; font-size: .75rem; font-weight: 600; background: var(--s2); color: var(--ink2); border: 1px solid var(--line); }
+.badge.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.badge.crit { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 45%, transparent); }
+.row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+button, .btn { font: inherit; font-size: .9rem; padding: .45rem .85rem; border-radius: 8px; border: 1px solid var(--line); background: var(--s2); color: var(--ink-hi); cursor: pointer; transition: background .12s, border-color .12s; }
+button:hover { border-color: var(--ink3); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+button.primary:hover { background: var(--accent-hi); }
+button.danger { color: var(--crit); }
+button:disabled { opacity: .5; cursor: default; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; color: var(--ink2); padding: .35rem .75rem; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.sel { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.setting { display: grid; grid-template-columns: 1fr auto; gap: .2rem 1rem; align-items: center; padding: .65rem 0; border-top: 1px solid var(--line); }
+.setting:first-of-type { border-top: 0; }
+.setting .name { color: var(--ink-hi); font-weight: 550; }
+.setting .help { grid-column: 1 / -1; color: var(--ink2); font-size: .84rem; }
+.cmd { display: flex; align-items: stretch; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; margin: .45rem 0; }
+.cmd code { flex: 1; padding: .5rem .7rem; font: .85rem var(--mono); white-space: nowrap; overflow-x: auto; color: var(--ink-hi); }
+.cmd button { border: 0; border-left: 1px solid var(--line); border-radius: 0 8px 8px 0; background: transparent; color: var(--ink2); padding: 0 .75rem; font-size: .8rem; }
+.cmd button:hover { color: var(--accent); }
+details { margin-top: .8rem; border-top: 1px solid var(--line); padding-top: .4rem; }
+summary { cursor: pointer; color: var(--ink2); font-size: .88rem; padding: .3rem 0; }
+select { font: inherit; font-size: .9rem; padding: .4rem .6rem; border-radius: 8px; border: 1px solid var(--line); background: var(--s2); color: var(--ink-hi); }
+.diagram { background: var(--s2); border-radius: 10px; padding: .6rem; margin-top: .6rem; }
+.diagram svg { display: block; width: 100%; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; margin: .7rem 0 0; font-size: .82rem; color: var(--ink2); }
+.legend span::before { content: ""; display: inline-block; width: .7rem; height: .7rem; border-radius: 3px; margin-right: .35rem; vertical-align: -1px; background: var(--c); }
+table.pins { width: 100%; border-collapse: collapse; font-size: .86rem; margin-top: .8rem; }
+table.pins td { padding: .3rem .4rem; border-top: 1px solid var(--line); vertical-align: top; }
+table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width: 1%; }
+.sw { display: inline-block; width: .65rem; height: .65rem; border-radius: 3px; margin-right: .4rem; }
+.progress { height: 6px; background: var(--s2); border-radius: 99px; overflow: hidden; margin-top: .6rem; display: none; }
+.progress div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+#toasts { position: fixed; right: 1rem; bottom: 1rem; display: grid; gap: .5rem; z-index: 10; max-width: min(420px, calc(100vw - 2rem)); }
+.toast { background: var(--s1); border: 1px solid var(--line); border-left: 4px solid var(--good); border-radius: 8px; padding: .6rem .8rem; box-shadow: 0 8px 24px rgb(0 0 0 / .3); font-size: .9rem; animation: in .18s ease-out; }
+.toast.bad { border-left-color: var(--crit); }
+@keyframes in { from { transform: translateY(8px); opacity: 0; } }
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <div class="logo">t</div>
+  <div><h1 id="name">thingino backpack</h1><div class="meta" id="meta">&nbsp;</div></div>
+  <span class="pill"><span class="dot" id="dot"></span><span id="online">connecting</span></span>
+</div></header>
+
+<main>
+<section class="card">
+  <h2>Camera <span class="badge" id="power-badge">…</span></h2>
+  <div class="stats">
+    <div class="stat"><div class="k">Power</div><div class="v" id="st-power">…</div></div>
+    <div class="stat"><div class="k">Boot pin</div><div class="v" id="st-boot">…</div></div>
+    <div class="stat"><div class="k">USB</div><div class="v" id="st-usb">…</div></div>
+    <div class="stat"><div class="k">Flash chip</div><div class="v" id="st-flash">…</div></div>
+  </div>
+  <p class="muted" id="st-note" hidden></p>
+  <div class="row">
+    <button class="primary" id="power-toggle">Power on</button>
+    <button data-action="power-cycle" title="Cut the power for a second, then turn it back on">Power cycle</button>
+    <button data-action="bootrom" title="Hold the boot pin through a power cycle, and let go once the bootrom shows up on USB">Enter bootrom</button>
+    <button id="boot-toggle" title="Hold the boot pin and BOOTSEL, so the next power-on boots from USB">Hold boot pin</button>
+  </div>
+  <details>
+    <summary>Advanced</summary>
+    <div class="setting">
+      <span class="name">BOOTSEL</span>
+      <span class="seg" data-setting="bootsel"><button data-v="low">Pulled low</button><button data-v="high">Driven high</button></span>
+      <span class="help">For boards that bring out the SoC's boot select. It moves with the boot pin; driven high only while the camera is powered.</span>
+    </div>
+    <div class="setting">
+      <span class="name">USB port</span>
+      <span class="seg" data-setting="usb_port"><button data-v="on">Connected</button><button data-v="off">Disconnected</button></span>
+      <span class="help">Disconnected powers the port down and lets go of the lines, for a camera whose SoC hosts a USB Wi-Fi module on them. Entering the bootrom needs it connected.</span>
+    </div>
+  </details>
+</section>
+
+<section class="card">
+  <h2>Flash the camera</h2>
+  <p class="muted">The camera is flashed through this backpack's dfu-remote daemon, from a computer or the web flasher in remote mode.</p>
+  <div id="dfu-cmds"></div>
+  <details><summary>Addresses</summary><div id="addrs"></div></details>
+</section>
+
+<section class="card">
+  <h2>Console</h2>
+  <p class="muted">The camera's serial console, raw, one client at a time; a new one takes over. Ctrl-] leaves.</p>
+  <div id="console-cmds"></div>
+  <p class="muted">RFC 2217, for tools that set the baud rate or send a break. Its DTR holds the boot pin and RTS cuts the power, as esptool's auto-reset does.</p>
+  <div id="rfc-cmds"></div>
+</section>
+
+<section class="card" id="flash-card">
+  <h2>Flash chip <span class="badge" id="lent-badge">idle</span></h2>
+  <p class="muted">The camera's SPI flash through a SOIC-8 clip, for flashrom 1.4.0 or later.</p>
+  <div id="serprog-cmds"></div>
+  <div class="setting">
+    <span class="name">VCC</span>
+    <span class="seg" data-flash="vcc"><button data-v="driven">From the backpack</button><button data-v="alone">From the camera</button></span>
+    <span class="help">From the backpack needs the camera off. From the camera is for boards whose flash shares the SoC's rail: each run power-cycles the camera with the boot pin held, so its bootrom leaves the flash alone.</span>
+  </div>
+  <div class="setting">
+    <span class="name">HOLD</span>
+    <span class="seg" data-flash="hold"><button data-v="driven">Driven high</button><button data-v="alone">Left alone</button></span>
+    <span class="help">Chips in quad mode ignore HOLD, so it can be left alone for them.</span>
+  </div>
+  <div class="diagram" id="clip"></div>
+</section>
+
+<section class="card wide">
+  <h2>Wiring <span class="badge" style="margin-left:auto"><select id="board" aria-label="Board"></select></span></h2>
+  <div class="diagram" id="board-svg"></div>
+  <div class="legend">
+    <span style="--c:var(--r-pwr)">camera control</span>
+    <span style="--c:var(--r-uart)">UART</span>
+    <span style="--c:var(--r-usb)">USB</span>
+    <span style="--c:var(--r-flash)">flash clip</span>
+    <span style="--c:var(--r-vcc)">flash VCC</span>
+    <span style="--c:var(--r-gnd)">ground</span>
+  </div>
+  <table class="pins" id="pin-table"></table>
+</section>
+
+<section class="card" id="wifi-card" hidden>
+  <h2>Wi-Fi</h2>
+  <div class="setting">
+    <span class="name">TX power</span>
+    <span class="row"><select id="tx-power"></select><button id="tx-set">Apply</button></span>
+    <span class="help" id="tx-help">The most the radio transmits at.</span>
+  </div>
+  <div class="setting">
+    <span class="name">Forget this network</span>
+    <button class="danger" id="wifi-reset">Reset Wi-Fi</button>
+    <span class="help">Erases the saved network and restarts into the setup portal, an open access point.</span>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Firmware <span class="badge" id="fw-state">…</span></h2>
+  <p id="fw-now" class="muted">&nbsp;</p>
+  <div class="row"><input type="file" id="fw-file" accept=".bin"><button class="primary" id="fw-send" disabled>Update</button></div>
+  <div class="progress" id="fw-progress"><div></div></div>
+  <p class="muted">A release's <code>-app.bin</code> for this chip. The backpack restarts into it, and goes back to the firmware it runs now if the new one is not on the network within five minutes.</p>
+</section>
+</main>
+<div id="toasts"></div>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+function toast(text, bad) {
+  const t = document.createElement('div');
+  t.className = 'toast' + (bad ? ' bad' : '');
+  t.textContent = text;
+  $('toasts').append(t);
+  setTimeout(() => t.remove(), bad ? 7000 : 3500);
+}
+
+async function call(path, method = 'GET', body) {
+  try {
+    const r = await fetch(path, { method, body });
+    const j = await r.json().catch(() => ({ ok: false, error: 'HTTP ' + r.status }));
+    return j;
+  } catch (e) {
+    return { ok: false, error: 'The backpack did not answer.' };
+  }
+}
+async function act(path, label) {
+  const r = await call(path, 'POST');
+  if (r.ok) toast(r.message || label); else toast(r.error || 'Failed', true);
+  return r;
+}
+
+// Clipboard needs a secure context, which a LAN http page is not.
+function copy(text) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  const a = document.createElement('textarea');
+  a.value = text; a.style.position = 'fixed'; a.style.opacity = '0';
+  document.body.append(a); a.select(); document.execCommand('copy'); a.remove();
+  return Promise.resolve();
+}
+function cmd(text) {
+  return '<div class="cmd"><code>' + esc(text) + '</code><button data-copy="' + esc(text) + '">Copy</button></div>';
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-copy]');
+  if (b) copy(b.dataset.copy).then(() => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1200); });
+});
+
+/* ---------- pins and boards ---------- */
+
+const ROLE_COLOR = { pwr: 'var(--r-pwr)', uart: 'var(--r-uart)', usb: 'var(--r-usb)', flash: 'var(--r-flash)', vcc: 'var(--r-vcc)', gnd: 'var(--r-gnd)' };
+
+// GPIO number -> what the backpack uses it for.
+function roles(p) {
+  const m = {};
+  const add = (g, short, long, c) => { if (g !== undefined && g !== null) m[g] = { short, long, c }; };
+  add(p.power, 'camera power', 'Camera power switch (high: on)', 'pwr');
+  add(p.bootsel, 'BOOTSEL', 'Camera SoC BOOTSEL, on boards that bring it out', 'pwr');
+  add(p.tx, 'UART TX', 'UART TX, to the camera\'s RX', 'uart');
+  add(p.rx, 'UART RX', 'UART RX, from the camera\'s TX', 'uart');
+  if (p.clip) {
+    add(p.clip.cs, 'flash CS', 'Flash CS, clip pin 1', 'flash');
+    add(p.clip.miso, 'flash DO', 'Flash DO, clip pin 2', 'flash');
+    add(p.clip.clk, 'flash CLK', 'Flash CLK, clip pin 6', 'flash');
+    add(p.clip.hold, 'flash HOLD', 'Flash HOLD, clip pin 7', 'flash');
+    add(p.clip.vcc, 'flash VCC', 'Flash VCC, clip pin 8, during flashrom only', 'vcc');
+  }
+  add(p.boot, 'boot pin / DI', 'Camera boot pin: flash DI, pin 5, pulled low to boot from USB; also the clip\'s MOSI', 'flash');
+  if (p.usb_dm !== undefined) {
+    add(p.usb_dm, 'USB D-', 'Camera USB D-', 'usb');
+    add(p.usb_dp, 'USB D+', 'Camera USB D+', 'usb');
+  }
+  return m;
+}
+
+// Header pins in physical order, as seen from the top. Columns run left to right; numbers
+// are GPIOs, strings are silkscreen names. usb: where the connector is; native marks the
+// connector wired to the chip's own USB, which is the camera's.
+const BOARDS = {
+  devkitc: {
+    name: 'ESP32-S3-DevKitC-1', chip: 'esp32s3', usbAt: 'bottom', module: true,
+    usb: [{ x: .28, label: 'UART' }, { x: .72, label: 'USB', native: true }],
+    cols: [
+      { side: 'L', pins: ['3V3', '3V3', 'RST', 4, 5, 6, 7, 15, 16, 17, 18, 8, 3, 46, 9, 10, 11, 12, 13, 14, '5V', 'GND'] },
+      { side: 'R', pins: ['GND', 43, 44, 1, 2, 42, 41, 40, 39, 38, 37, 36, 35, 0, 45, 48, 47, 21, 20, 19, 'GND', 'GND'] },
+    ],
+    silk: { 43: 'TX', 44: 'RX' },
+    note: 'Camera USB goes to the port marked USB. The port marked UART is the backpack\'s own log, and drives GPIO44 (RX) whenever it is plugged in.',
+  },
+  supermini: {
+    name: 'ESP32-S3 Super Mini', chip: 'esp32s3', usbAt: 'top',
+    usb: [{ x: .5, label: 'USB-C', native: true }],
+    cols: [
+      { side: 'L', pins: [43, 44, 1, 2, 3, 4, 5, 6, 7] },
+      { side: 'R', pins: ['5V', 'GND', '3V3', 13, 12, 11, 10, 9, 8] },
+    ],
+    silk: { 43: 'TX', 44: 'RX' },
+    note: 'The USB-C port is the camera\'s USB, so the board is powered from its 5V pin.',
+  },
+  xiao: {
+    name: 'Seeed XIAO ESP32S3', chip: 'esp32s3', usbAt: 'top',
+    usb: [{ x: .5, label: 'USB-C', native: true }],
+    cols: [
+      { side: 'L', pins: [1, 2, 3, 4, 5, 6, 43] },
+      { side: 'R', pins: ['5V', 'GND', '3V3', 9, 8, 7, 44] },
+    ],
+    silk: { 1: 'D0', 2: 'D1', 3: 'D2', 4: 'D3', 5: 'D4', 6: 'D5', 43: 'D6', 44: 'D7', 7: 'D8', 8: 'D9', 9: 'D10' },
+    note: 'The USB-C port is the camera\'s USB, so the board is powered from its 5V pin.',
+  },
+  s2mini: {
+    name: 'LOLIN S2 Mini', chip: 'esp32s2', usbAt: 'bottom',
+    usb: [{ x: .5, label: 'USB-C', native: true }],
+    cols: [
+      { side: 'L', pins: ['EN', 3, 5, 7, 9, 11, 12, '3V3'] },
+      { side: 'L', pins: [1, 2, 4, 6, 8, 10, 13, 14] },
+      { side: 'R', pins: [40, 38, 36, 34, 21, 17, 'GND', 15] },
+      { side: 'R', pins: [39, 37, 35, 33, 18, 16, 'GND', 'VBUS'] },
+    ],
+    silk: {},
+    note: 'The USB-C port is the camera\'s USB, so the board is powered from its VBUS pin.',
+  },
+};
+
+function boardSvg(b, rm) {
+  const pitch = 26, colGap = 24, padX = 26, rowsTop = 70;
+  const rows = Math.max(...b.cols.map((c) => c.pins.length));
+  const nL = b.cols.filter((c) => c.side === 'L').length;
+  const nR = b.cols.length - nL;
+  const inner = b.module ? 230 : 110;
+  const bw = padX * 2 + (nL + nR - 1) * colGap + inner;
+  const bh = rowsTop + rows * pitch + 60;
+  const label = 330, W = label * 2 + bw, bx = label, by = 20;
+  const colX = [];
+  let x = bx + padX;
+  b.cols.forEach((c, i) => {
+    colX.push(x);
+    x += (b.cols[i + 1] && b.cols[i + 1].side !== c.side) ? inner + colGap : colGap;
+  });
+  const top = b.usbAt === 'top';
+  const y0 = by + (top ? rowsTop : 40);
+  let s = '<svg viewBox="0 0 ' + W + ' ' + (bh + 40) + '" font-family="system-ui, sans-serif" role="img" aria-label="' + esc(b.name) + ' wiring">';
+  s += '<rect x="' + bx + '" y="' + by + '" width="' + bw + '" height="' + bh + '" rx="14" fill="var(--board)" stroke="var(--board-edge)" stroke-width="2"/>';
+  // module or chip
+  const cx = bx + bw / 2;
+  if (b.module) {
+    const my = top ? by + bh - 210 : by + 14;
+    s += '<rect x="' + (cx - 58) + '" y="' + my + '" width="116" height="190" rx="4" fill="#9aa0a6"/><rect x="' + (cx - 58) + '" y="' + my + '" width="116" height="44" fill="#2b2b2b"/>';
+    s += '<text x="' + cx + '" y="' + (my + 120) + '" text-anchor="middle" font-size="12" fill="#333">ESP32-S3</text>';
+  } else {
+    const cy = by + bh / 2;
+    s += '<rect x="' + (cx - 26) + '" y="' + (cy - 26) + '" width="52" height="52" rx="3" fill="#2b2b2b"/>';
+    s += '<text x="' + cx + '" y="' + (cy + 4) + '" text-anchor="middle" font-size="10" fill="#aaa">' + esc(b.chip.replace('esp32', '').toUpperCase()) + '</text>';
+  }
+  // USB connectors
+  for (const u of b.usb) {
+    const ux = bx + bw * u.x, uy = top ? by - 8 : by + bh - 26;
+    s += '<rect x="' + (ux - 22) + '" y="' + uy + '" width="44" height="34" rx="5" fill="#b8bcc2" stroke="' + (u.native ? 'var(--r-usb)' : '#777') + '" stroke-width="' + (u.native ? 3 : 1) + '"/>';
+    const ly = top ? uy + 52 : uy - 8;
+    s += '<text x="' + ux + '" y="' + ly + '" text-anchor="middle" font-size="12" font-weight="600" fill="' + (u.native ? 'var(--r-usb)' : '#cfd6cf') + '">' + esc(u.label) + (u.native ? ' · camera USB' : '') + '</text>';
+  }
+  // pins and labels
+  const rowLabels = { L: [], R: [] };
+  b.cols.forEach((c, ci) => {
+    c.pins.forEach((p, ri) => {
+      const px = colX[ci], py = y0 + ri * pitch + pitch / 2;
+      const isGnd = p === 'GND';
+      const r = typeof p === 'number' ? rm[p] : (isGnd ? { short: 'GND', c: 'gnd' } : null);
+      const col = r ? ROLE_COLOR[r.c] : null;
+      s += '<circle cx="' + px + '" cy="' + py + '" r="8" fill="' + (col || 'var(--pad)') + '" ' + (r ? '' : 'opacity=".55"') + '/><circle cx="' + px + '" cy="' + py + '" r="3.2" fill="#111"/>';
+      const silk = typeof p === 'number' ? (b.silk[p] || String(p)) : p;
+      const inward = c.side === 'L' ? 1 : -1;
+      const lastOfSide = c.side === 'L' ? (ci === nL - 1) : (ci === nL);
+      if (lastOfSide) {
+        s += '<text x="' + (px + inward * 13) + '" y="' + (py + 4) + '" text-anchor="' + (inward > 0 ? 'start' : 'end') + '" font-size="10" fill="#cfd6cf" opacity=".8">' + esc(silk) + '</text>';
+      }
+      if (r && !(isGnd && c.side === 'R' && false)) {
+        const name = typeof p === 'number' ? 'GPIO' + p : p;
+        const list = (rowLabels[c.side][ri] = rowLabels[c.side][ri] || []);
+        const text = isGnd ? 'GND' : name + ' · ' + r.short;
+        if (!list.some((it) => it.text === text)) list.push({ text, col });
+      }
+    });
+  });
+  for (const side of ['L', 'R']) {
+    rowLabels[side].forEach((items, ri) => {
+      if (!items) return;
+      const py = y0 + ri * pitch + pitch / 2;
+      const edge = side === 'L' ? colX[0] - 14 : colX[colX.length - 1] + 14;
+      const tx = side === 'L' ? bx - 14 : bx + bw + 14;
+      s += '<line x1="' + edge + '" y1="' + py + '" x2="' + (side === 'L' ? tx + 4 : tx - 4) + '" y2="' + py + '" stroke="' + items[0].col + '" stroke-width="1.5" opacity=".6"/>';
+      let t = '';
+      items.forEach((it, i) => { t += (i ? '<tspan fill="var(--ink3)">  ·  </tspan>' : '') + '<tspan fill="' + it.col + '">' + esc(it.text) + '</tspan>'; });
+      s += '<text x="' + tx + '" y="' + (py + 5) + '" text-anchor="' + (side === 'L' ? 'end' : 'start') + '" font-size="14" font-weight="600">' + t + '</text>';
+    });
+  }
+  return s + '</svg>';
+}
+
+function clipSvg(c, boot) {
+  const L = [['CS', 'GPIO' + c.cs, 'flash'], ['DO', 'GPIO' + c.miso, 'flash'], ['WP', 'not connected', null], ['GND', 'GND', 'gnd']];
+  const R = [['VCC', 'GPIO' + c.vcc, 'vcc'], ['HOLD', 'GPIO' + c.hold, 'flash'], ['CLK', 'GPIO' + c.clk, 'flash'], ['DI', 'GPIO' + boot, 'flash']];
+  let s = '<svg viewBox="0 0 600 290" font-family="system-ui, sans-serif" role="img" aria-label="SOIC-8 clip wiring">';
+  s += '<rect x="220" y="20" width="160" height="230" rx="8" fill="#2b2b2b"/><circle cx="244" cy="44" r="7" fill="#d9d9d9"/>';
+  s += '<text x="300" y="138" text-anchor="middle" font-size="14" fill="#bbb">flash chip</text><text x="300" y="158" text-anchor="middle" font-size="12" fill="#888">dot = pin 1</text>';
+  for (let i = 0; i < 4; i++) {
+    const y = 50 + 55 * i;
+    const cl = L[i][2] ? ROLE_COLOR[L[i][2]] : 'var(--ink3)', cr = ROLE_COLOR[R[i][2]];
+    s += '<rect x="192" y="' + y + '" width="28" height="14" fill="#b0b0b0"/><rect x="380" y="' + y + '" width="28" height="14" fill="#b0b0b0"/>';
+    s += '<text x="232" y="' + (y + 12) + '" font-size="13" font-weight="700" fill="#fff">' + (i + 1) + '</text><text x="360" y="' + (y + 12) + '" font-size="13" font-weight="700" fill="#fff">' + (8 - i) + '</text>';
+    s += '<text x="180" y="' + (y + 12) + '" text-anchor="end" font-size="15" font-weight="600" fill="' + cl + '">' + L[i][0] + ' · ' + L[i][1] + '</text>';
+    s += '<text x="420" y="' + (y + 12) + '" font-size="15" font-weight="600" fill="' + cr + '">' + R[i][0] + ' · ' + R[i][1] + '</text>';
+  }
+  s += '<text x="300" y="278" text-anchor="middle" font-size="12" fill="var(--ink2)">The clip\'s red wire goes on pin 1. Pins count down the left from the dot, then up the right.</text>';
+  return s + '</svg>';
+}
+
+function pinTable(p, rm) {
+  const rows = Object.keys(rm).map(Number).sort((a, b) => a - b).map((g) => {
+    const r = rm[g];
+    return '<tr><td><span class="sw" style="background:' + ROLE_COLOR[r.c] + '"></span>GPIO' + g + '</td><td>' + esc(r.long) + '</td></tr>';
+  });
+  if (p.usb_dm === undefined && p.usb) rows.push('<tr><td><span class="sw" style="background:var(--r-usb)"></span>' + esc(p.usb) + '</td><td>Camera USB</td></tr>');
+  rows.push('<tr><td><span class="sw" style="background:var(--r-gnd)"></span>GND</td><td>Common ground with the camera</td></tr>');
+  return rows.join('');
+}
+
+function drawBoard() {
+  const key = $('board').value;
+  try { localStorage.setItem('backpack-board', key); } catch (e) { /* private mode */ }
+  const rm = roles(info.pins);
+  const b = BOARDS[key];
+  if (!b) { $('board-svg').innerHTML = '<p class="muted">No drawing for this board yet: the table below lists every pin.</p>'; return; }
+  $('board-svg').innerHTML = boardSvg(b, rm) + (b.note ? '<p class="muted" style="margin:.5rem .3rem 0">' + esc(b.note) + '</p>' : '');
+}
+
+/* ---------- state ---------- */
+
+let info = null;
+let camState = null;
+
+function seg(el, value) {
+  for (const b of el.querySelectorAll('button')) b.classList.toggle('sel', b.dataset.v === value);
+}
+
+function online(up) {
+  $('dot').className = 'dot ' + (up ? 'on' : 'off');
+  $('online').textContent = up ? 'online' : 'offline';
+}
+
+async function pollCamera() {
+  const s = await call('/api/camera');
+  if (s.ok === false) { online(false); return; }
+  online(true);
+  camState = s;
+  const on = s.power === 'on';
+  $('power-badge').textContent = on ? 'on' : 'off';
+  $('power-badge').className = 'badge ' + (on ? 'good' : '');
+  $('st-power').textContent = on ? 'On' : 'Off';
+  $('st-boot').textContent = s.boot_pin === 'held' ? 'Held' : 'Released';
+  $('st-usb').textContent = s.usb_port === 'off' ? 'Disconnected' : (s.usb.length ? s.usb.join(', ') : 'No device');
+  $('st-flash').textContent = s.flash_lent ? 'Lent to flashrom' : 'Camera';
+  $('power-toggle').textContent = on ? 'Power off' : 'Power on';
+  $('boot-toggle').textContent = s.boot_pin === 'held' ? 'Release boot pin' : 'Hold boot pin';
+  const notes = [];
+  if (s.stuck_s !== null) notes.push('A USB transfer has been unanswered for ' + s.stuck_s + ' s.');
+  if (s.recoveries) notes.push(s.recoveries + ' recovery power cycle(s) so far.');
+  $('st-note').hidden = !notes.length;
+  $('st-note').textContent = notes.join(' ');
+  $('lent-badge').textContent = s.flash_lent ? 'in use by flashrom' : 'idle';
+  $('lent-badge').className = 'badge ' + (s.flash_lent ? 'warn' : '');
+  seg(document.querySelector('[data-setting="bootsel"]'), s.bootsel);
+  seg(document.querySelector('[data-setting="usb_port"]'), s.usb_port);
+}
+
+async function loadFlash() {
+  const f = await call('/api/flash');
+  if (f.ok === false) return;
+  seg(document.querySelector('[data-flash="vcc"]'), f.vcc);
+  seg(document.querySelector('[data-flash="hold"]'), f.hold);
+}
+
+async function loadFirmware() {
+  const o = await call('/api/ota');
+  if (o.ok === false) return;
+  $('fw-now').textContent = 'Running ' + o.version + ' from ' + o.slot + '.';
+  $('fw-state').textContent = o.state;
+  $('fw-state').className = 'badge ' + (o.state === 'valid' ? 'good' : 'warn');
+  if (o.state === 'on probation') setTimeout(loadFirmware, 3000);
+}
+
+async function loadWifi() {
+  const w = await call('/api/wifi');
+  if (w.ok === false) return;
+  const sel = $('tx-power');
+  sel.innerHTML = '';
+  for (let d = 20; d >= 2; d--) sel.add(new Option(d + ' dBm' + (d === 20 ? ', full' : ''), d));
+  if (w.tx_dbm !== null) sel.value = String(Math.round(w.tx_dbm));
+  if (w.brownout) $('tx-help').textContent = 'The most the radio transmits at. The last reset was a brownout, so it is capped at 13 dBm until the next clean boot.';
+}
+
+async function init() {
+  info = await call('/api/info');
+  if (info.ok === false) { online(false); toast('Could not read /api/info', true); return; }
+  document.title = info.name;
+  $('name').textContent = info.name;
+  $('meta').textContent = info.chip + ' · ' + info.version;
+  const host = info.name + '.local';
+  $('dfu-cmds').innerHTML = cmd('thingino-dfu --host ' + host + ':' + info.ports.dfu + ' -l');
+  $('addrs').innerHTML = info.endpoints.map(cmd).join('');
+  $('console-cmds').innerHTML = cmd('socat -,rawer,escape=0x1d tcp:' + host + ':' + info.ports.console);
+  $('rfc-cmds').innerHTML = cmd('rfc2217://' + host + ':' + info.ports.rfc2217);
+  if (info.pins.clip) {
+    $('serprog-cmds').innerHTML = cmd('flashrom -p serprog:ip=' + host + ':' + info.ports.serprog + ' -r dump.bin');
+    $('clip').innerHTML = clipSvg(info.pins.clip, info.pins.boot);
+  } else {
+    $('flash-card').hidden = true;
+  }
+  const sel = $('board');
+  for (const [k, b] of Object.entries(BOARDS)) if (b.chip === info.chip) sel.add(new Option(b.name, k));
+  sel.add(new Option('Other board', 'other'));
+  let saved = null;
+  try { saved = localStorage.getItem('backpack-board'); } catch (e) { /* private mode */ }
+  if (saved && [...sel.options].some((o) => o.value === saved)) sel.value = saved;
+  sel.onchange = drawBoard;
+  drawBoard();
+  $('pin-table').innerHTML = pinTable(info.pins, roles(info.pins));
+  if (info.wifi) { $('wifi-card').hidden = false; loadWifi(); }
+  pollCamera(); setInterval(pollCamera, 2000);
+  loadFlash(); loadFirmware();
+}
+
+/* ---------- actions ---------- */
+
+for (const b of document.querySelectorAll('[data-action]')) {
+  b.onclick = async () => { b.disabled = true; await act('/api/camera?action=' + b.dataset.action, b.textContent); b.disabled = false; pollCamera(); };
+}
+$('power-toggle').onclick = async () => {
+  const on = camState && camState.power === 'on';
+  await act('/api/camera?action=' + (on ? 'power-off' : 'power-on'));
+  pollCamera();
+};
+$('boot-toggle').onclick = async () => {
+  const held = camState && camState.boot_pin === 'held';
+  await act('/api/camera?action=' + (held ? 'boot-release' : 'boot-hold'));
+  pollCamera();
+};
+for (const el of document.querySelectorAll('[data-setting]')) {
+  el.onclick = async (e) => {
+    const b = e.target.closest('button');
+    if (!b || b.classList.contains('sel')) return;
+    const r = await act('/api/camera?' + el.dataset.setting + '=' + b.dataset.v);
+    if (r.ok) seg(el, b.dataset.v);
+    pollCamera();
+  };
+}
+for (const el of document.querySelectorAll('[data-flash]')) {
+  el.onclick = async (e) => {
+    const b = e.target.closest('button');
+    if (!b || b.classList.contains('sel')) return;
+    const r = await act('/api/flash?' + el.dataset.flash + '=' + b.dataset.v);
+    if (r.ok) seg(el, b.dataset.v);
+  };
+}
+$('tx-set').onclick = () => act('/api/wifi?tx_dbm=' + $('tx-power').value);
+$('wifi-reset').onclick = () => {
+  if (confirm('Forget the Wi-Fi network and restart into the setup portal?')) act('/api/wifi-reset');
+};
+$('fw-file').onchange = () => { $('fw-send').disabled = !$('fw-file').files.length; };
+$('fw-send').onclick = () => {
+  const file = $('fw-file').files[0];
+  if (!file) return;
+  const bar = $('fw-progress');
+  bar.style.display = 'block';
+  $('fw-send').disabled = true;
+  const x = new XMLHttpRequest();
+  x.open('POST', '/api/ota');
+  x.upload.onprogress = (e) => { if (e.lengthComputable) bar.firstElementChild.style.width = (100 * e.loaded / e.total) + '%'; };
+  x.onload = () => {
+    let r = {};
+    try { r = JSON.parse(x.responseText); } catch (e) { r = { ok: false, error: 'HTTP ' + x.status }; }
+    if (r.ok) { toast(r.message); setTimeout(() => location.reload(), 15000); } else { toast(r.error, true); $('fw-send').disabled = false; }
+  };
+  x.onerror = () => { toast('The upload failed.', true); $('fw-send').disabled = false; };
+  x.send(file);
+};
+
+init();
+</script>
+</body>
+</html>
