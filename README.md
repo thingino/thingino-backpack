@@ -416,6 +416,14 @@ Then run flashrom from any computer that reaches the unit. Until flashrom's serp
 gains IPv6 (1.8.0 has none), this is IPv4 only, though the unit listens on IPv6 too: where
 `<host>.local` does not resolve to an IPv4 address, give it the one the status page lists.
 
+Besides serprog's own commands, the unit offers one more in its command map, `O_PROGRAM`
+(0x30), for clients that know it: page programming with the write enable and the status
+polling done on the unit, which makes a write one round trip per run of pages instead of
+several per page. Its parameters are the address width (3 or 4 bytes), the address (4
+bytes), the length (3) and the page size (2), little-endian, then the data; it answers ACK
+once every page is programmed, or NAK. flashrom only uses the commands it knows, so nothing
+changes for it.
+
 ```sh
 curl -X POST 'http://<host>.local/api/camera?action=power-off'   # when VCC is driven
 flashrom -p serprog:ip=<host>.local:8888                         # probe: names the chip

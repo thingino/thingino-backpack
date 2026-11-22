@@ -28,6 +28,8 @@
 //!
 //! The protocol is flashrom's own specification (serprog-protocol.rst), version 1, with the
 //! commands flashrom uses on an SPI-only programmer.
+//! One more is the backpack's own, `O_PROGRAM` (0x30): page programming with the status
+//! polling done here, for clients that know it; flashrom asks only for what it knows.
 
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -63,8 +65,12 @@ const S_BUSTYPE: u8 = 0x12;
 const O_SPIOP: u8 = 0x13;
 const S_SPI_FREQ: u8 = 0x14;
 const S_PIN_STATE: u8 = 0x15;
+/// The backpack's own, outside serprog's range: page programming with the polling done here,
+/// so that a write costs one round trip per run of pages rather than several per page.
+/// flashrom asks only for the commands it knows, and never sees it.
+const O_PROGRAM: u8 = 0x30;
 
-const COMMANDS: [u8; 13] = [
+const COMMANDS: [u8; 14] = [
     NOP,
     Q_IFACE,
     Q_CMDMAP,
@@ -78,6 +84,7 @@ const COMMANDS: [u8; 13] = [
     O_SPIOP,
     S_SPI_FREQ,
     S_PIN_STATE,
+    O_PROGRAM,
 ];
 
 const BUS_SPI: u8 = 1 << 3;
@@ -307,6 +314,7 @@ impl Session<'_> {
                     stream.write_all(&[if buses & BUS_SPI == 0 { NAK } else { ACK }])?;
                 }
                 O_SPIOP => self.spi_op(stream)?,
+                O_PROGRAM => self.program(stream)?,
                 S_SPI_FREQ => {
                     let mut wanted = [0_u8; 4];
                     stream.read_exact(&mut wanted)?;
@@ -432,6 +440,52 @@ impl Session<'_> {
     }
 }
 
+/// Page programming, with the opcodes every SPI NOR flash takes for it.
+const WREN: u8 = 0x06;
+const PAGE_PROGRAM: u8 = 0x02;
+const RDSR: u8 = 0x05;
+/// Status register bit 0: the chip is busy with a program or erase.
+const WIP: u8 = 1;
+/// A page programs in 0.7 ms typically and 5 ms at worst; this is well past both.
+const PAGE_TIMEOUT: Duration = Duration::from_millis(50);
+
+impl Session<'_> {
+    /// `O_PROGRAM`: `[address bytes (3 or 4), address (4, LE), length (3, LE), page size (2,
+    /// LE)]`, then the data. Each page, the part of it the data covers, gets a write enable,
+    /// a page program and status polls until it is done. The answer comes once all the data
+    /// is in: ACK, or NAK if any page failed or timed out, the rest then skipped.
+    fn program(&mut self, stream: &mut TcpStream) -> io::Result<()> {
+        let mut head = [0_u8; 10];
+        stream.read_exact(&mut head)?;
+        let address_bytes = usize::from(head[0]);
+        let mut address = u32::from_le_bytes([head[1], head[2], head[3], head[4]]);
+        let mut left = u24(&head[5..8]);
+        let page = usize::from(u16::from_le_bytes([head[8], head[9]]));
+        let valid = matches!(address_bytes, 3 | 4) && page.is_power_of_two() && page + 5 <= CHUNK;
+        let Some(bus) = self.bus.as_mut().filter(|_| valid) else {
+            discard(stream, left)?;
+            return stream.write_all(&[NAK]);
+        };
+        let mut failed = false;
+        while left > 0 {
+            let at = address as usize;
+            let n = left.min(page - at % page);
+            let start = 1 + address_bytes;
+            // The data comes in whatever happens, so the next command lines up.
+            stream.read_exact(&mut bus.tx.slice(start + n)[start..])?;
+            if !failed {
+                if let Err(why) = bus.program_page(address, address_bytes, n) {
+                    warn!("serprog: programming at {address:#x}: {why}");
+                    failed = true;
+                }
+            }
+            address = address.wrapping_add(n as u32);
+            left -= n;
+        }
+        stream.write_all(&[if failed { NAK } else { ACK }])
+    }
+}
+
 /// The SPI bus on the clip, for as long as flashrom has the pins enabled.
 struct Bus<'a> {
     pins: &'a Pins,
@@ -521,6 +575,59 @@ impl<'a> Bus<'a> {
             thread::sleep(Duration::from_millis(1));
         }
         warn!("serprog: no flash answered steadily within {} ms", READY_WITHIN.as_millis());
+    }
+
+    /// Programs the `n` bytes in `tx` after the opcode and address, with a write enable
+    /// before and status polls after. Those two carry their bytes inline, so the page
+    /// waiting in `tx` is not touched.
+    fn program_page(&mut self, address: u32, address_bytes: usize, n: usize) -> Result<(), String> {
+        self.command(&[WREN]).map_err(|err| format!("write enable: {err}"))?;
+        let header = &mut self.tx.slice(1 + address_bytes)[..];
+        header[0] = PAGE_PROGRAM;
+        for (i, byte) in header[1..].iter_mut().enumerate() {
+            *byte = (address >> (8 * (address_bytes - 1 - i))) as u8;
+        }
+        self.select();
+        let result = self.transfer(1 + address_bytes + n, false);
+        self.deselect();
+        result.map_err(|err| format!("page program: {err}"))?;
+        let start = Instant::now();
+        loop {
+            if self.status().map_err(|err| format!("status: {err}"))? & WIP == 0 {
+                return Ok(());
+            }
+            if start.elapsed() > PAGE_TIMEOUT {
+                return Err("still busy after 50 ms".into());
+            }
+        }
+    }
+
+    /// A one-byte command, sent from a buffer of its own so `tx` keeps the page waiting in
+    /// it.
+    fn command(&mut self, bytes: &[u8]) -> Result<(), EspError> {
+        let mut transaction: sys::spi_transaction_t = unsafe { core::mem::zeroed() };
+        transaction.length = bytes.len() * 8;
+        transaction.flags = sys::SPI_TRANS_USE_TXDATA;
+        unsafe { transaction.__bindgen_anon_1.tx_data[..bytes.len()].copy_from_slice(bytes) };
+        self.select();
+        // SAFETY: the transaction carries its bytes inline and waits to finish.
+        let result = esp!(unsafe { sys::spi_device_transmit(self.device, &raw mut transaction) });
+        self.deselect();
+        result
+    }
+
+    /// The status register, read through inline buffers, so `tx` keeps the page.
+    fn status(&mut self) -> Result<u8, EspError> {
+        let mut transaction: sys::spi_transaction_t = unsafe { core::mem::zeroed() };
+        transaction.length = 16;
+        transaction.rxlength = 16;
+        transaction.flags = sys::SPI_TRANS_USE_TXDATA | sys::SPI_TRANS_USE_RXDATA;
+        transaction.__bindgen_anon_1.tx_data = [RDSR, 0xFF, 0, 0];
+        self.select();
+        // SAFETY: as above.
+        let result = esp!(unsafe { sys::spi_device_transmit(self.device, &raw mut transaction) });
+        self.deselect();
+        result.map(|()| unsafe { transaction.__bindgen_anon_2.rx_data[1] })
     }
 
     /// One SPI transaction of `n` bytes out of `tx`, captured into `rx` when `read`.
