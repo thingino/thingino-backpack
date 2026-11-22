@@ -57,6 +57,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover { background: var(--accent-hi); }
 button.danger { color: var(--crit); }
 button:disabled { opacity: .5; cursor: default; }
+input[type=file] { color: var(--ink2); font-size: .85rem; }
+input[type=file]::file-selector-button { font: inherit; padding: .4rem .75rem; margin-right: .6rem; border-radius: 8px; border: 1px solid var(--line); background: var(--s2); color: var(--ink-hi); cursor: pointer; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; border-radius: 0; background: transparent; color: var(--ink2); padding: .35rem .75rem; }
 .seg button + button { border-left: 1px solid var(--line); }
@@ -159,19 +161,6 @@ table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width
   <div class="diagram" id="clip"></div>
 </section>
 
-<section class="card wide">
-  <h2>Wiring <span class="badge" style="margin-left:auto"><select id="board" aria-label="Board"></select></span></h2>
-  <div class="diagram" id="board-svg"></div>
-  <div class="legend">
-    <span style="--c:var(--r-pwr)">camera control</span>
-    <span style="--c:var(--r-uart)">UART</span>
-    <span style="--c:var(--r-usb)">USB</span>
-    <span style="--c:var(--r-flash)">flash clip</span>
-    <span style="--c:var(--r-vcc)">flash VCC</span>
-    <span style="--c:var(--r-gnd)">ground</span>
-  </div>
-  <table class="pins" id="pin-table"></table>
-</section>
 
 <section class="card" id="wifi-card" hidden>
   <h2>Wi-Fi</h2>
@@ -193,6 +182,20 @@ table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width
   <div class="row"><input type="file" id="fw-file" accept=".bin"><button class="primary" id="fw-send" disabled>Update</button></div>
   <div class="progress" id="fw-progress"><div></div></div>
   <p class="muted">A release's <code>-app.bin</code> for this chip. The backpack restarts into it, and goes back to the firmware it runs now if the new one is not on the network within five minutes.</p>
+</section>
+
+<section class="card wide">
+  <h2>Wiring <span class="badge" style="margin-left:auto"><select id="board" aria-label="Board"></select></span></h2>
+  <div class="diagram" id="board-svg"></div>
+  <div class="legend">
+    <span style="--c:var(--r-pwr)">camera control</span>
+    <span style="--c:var(--r-uart)">UART</span>
+    <span style="--c:var(--r-usb)">USB</span>
+    <span style="--c:var(--r-flash)">flash clip</span>
+    <span style="--c:var(--r-vcc)">flash VCC</span>
+    <span style="--c:var(--r-gnd)">ground</span>
+  </div>
+  <table class="pins" id="pin-table"></table>
 </section>
 </main>
 <div id="toasts"></div>
