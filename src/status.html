@@ -90,10 +90,28 @@ table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width
 .sw { display: inline-block; width: .65rem; height: .65rem; border-radius: 3px; margin-right: .4rem; }
 .progress { height: 6px; background: var(--bg); border-radius: 99px; overflow: hidden; margin-top: .6rem; display: none; }
 .progress div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
-.term { margin: 0; height: 26rem; overflow-y: auto; background: var(--track); border: 1px solid var(--line); border-radius: 6px; padding: .5rem .65rem; font: 13px/1.4 var(--mono); color: var(--ink); white-space: pre; outline: none; cursor: text; }
+.term { margin: 0; height: 32rem; overflow-y: auto; background: var(--track); border: 1px solid var(--line); border-radius: 6px; padding: .5rem .65rem; font: 13px/1.4 var(--mono); color: var(--ink); white-space: pre; outline: none; cursor: text; }
 .term:focus { border-color: var(--accent); }
 .term div { min-height: 1.4em; }
 .term .note { color: var(--ink3); }
+.tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--line); margin-bottom: 1rem; overflow-x: auto; }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--ink2); padding: .55rem .9rem; font-size: .92rem; white-space: nowrap; }
+.tabs button:hover { color: var(--ink-hi); background: none; }
+.tabs button.sel { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.pane { display: none; }
+.pane.on { display: block; }
+.pane.narrow { max-width: 760px; }
+.grid2 { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); align-items: start; }
+.grid2 .wide { grid-column: 1 / -1; }
+.stack { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.card-h > .seg { margin-left: .75rem; }
+.note-box { background: color-mix(in srgb, var(--warn) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); color: var(--ink-hi); border-radius: 6px; padding: .6rem .8rem; }
+table.uarts { width: 100%; border-collapse: collapse; margin-top: .6rem; font-size: .85rem; }
+table.uarts td, table.uarts th { padding: .45rem .5rem; border-top: 1px solid var(--line); text-align: left; vertical-align: middle; }
+table.uarts th { color: var(--ink2); font-weight: 500; font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; border-top: 0; }
+table.uarts tr.off td { opacity: .4; }
+table.uarts input { font: .85rem var(--sans); padding: .35rem .55rem; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-hi); width: 100%; min-width: 8rem; }
+table.uarts code { color: var(--ink2); white-space: nowrap; }
 .card-h .end button { padding: .2rem .65rem; font-size: .8rem; }
 footer { text-align: center; color: var(--ink3); font-size: .875rem; padding: 0 1rem 1.5rem; }
 footer .v { color: var(--ink2); }
@@ -113,8 +131,8 @@ footer .v { color: var(--ink2); }
 </div></header>
 
 <main>
-<div class="cols">
-<div class="col">
+<nav class="tabs" id="tabs"><button data-tab="camera">Camera</button><button data-tab="terminal">Terminal</button><button data-tab="flash">Flash chip</button><button data-tab="wiring">Wiring</button><button data-tab="settings">Settings</button></nav>
+<div class="pane" data-pane="camera"><div class="grid2">
 <section class="card">
   <div class="card-h"><svg viewBox="0 0 24 24"><path d="M3 8h3l2-3h8l2 3h3v11H3z"/><circle cx="12" cy="13" r="3.5"/></svg><h2>Camera</h2><span class="end"><span class="badge" id="power-badge">…</span></span></div>
   <div class="card-b">
@@ -131,35 +149,45 @@ footer .v { color: var(--ink2); }
     <button data-action="bootrom" title="Hold the boot pin through a power cycle, and let go once the bootrom shows up on USB">Enter bootrom</button>
     <button id="boot-toggle" title="Hold the boot pin and BOOTSEL, so the next power-on boots from USB">Hold boot pin</button>
   </div>
-  <details>
-    <summary>Advanced</summary>
-    <div class="setting">
-      <span class="name">BOOTSEL</span>
-      <span class="seg" data-setting="bootsel"><button data-v="low">Pulled low</button><button data-v="high">Driven high</button></span>
-      <span class="help">For boards that bring out the SoC's boot select. It moves with the boot pin; driven high only while the camera is powered.</span>
-    </div>
-    <div class="setting">
-      <span class="name">USB port</span>
-      <span class="seg" data-setting="usb_port"><button data-v="on">Connected</button><button data-v="off">Disconnected</button></span>
-      <span class="help">Disconnected powers the port down and lets go of the lines, for a camera whose SoC hosts a USB Wi-Fi module on them. Entering the bootrom needs it connected.</span>
-    </div>
-  </details>
+  </div>
+</section>
+<div class="stack">
+<section class="card">
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></svg><h2>Flash the camera</h2></div>
+  <div class="card-b">
+  <p class="muted">Through this backpack's dfu-remote daemon, from a computer or the web flasher in remote mode.</p>
+  <div id="dfu-cmds"></div>
+  <details><summary>Addresses</summary><div class="addrs" id="addrs"></div></details>
   </div>
 </section>
 <section class="card">
   <div class="card-h"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><h2>Console</h2></div>
   <div class="card-b">
-  <p class="muted">The camera's serial console, raw, one client at a time; a new one takes over. Ctrl-] leaves.</p>
+  <p class="muted">The serial console, raw, one client at a time; a new one takes over. Ctrl-] leaves.</p>
   <div id="console-cmds"></div>
-  <p class="muted">RFC 2217, for tools that set the baud rate or send a break. Its DTR holds the boot pin and RTS cuts the power, as esptool's auto-reset does.</p>
+  <p class="muted">RFC 2217, for tools that set the baud rate or send a break, on the camera SoC's UART. Its DTR holds the boot pin and RTS cuts the power, as esptool's auto-reset does.</p>
   <div id="rfc-cmds"></div>
   </div>
 </section>
 </div>
-<div class="col">
+</div></div>
+
+<div class="pane" data-pane="terminal">
+<section class="card" id="term-card" >
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M4 17l6-5-6-5M12 19h8"/></svg><h2>Terminal</h2><span class="seg" id="term-uarts"></span><span class="end"><span class="badge" id="term-badge">closed</span><button id="term-clear">Clear</button><button class="primary" id="term-open">Connect</button></span></div>
+  <div class="card-b">
+  <div id="terms"></div>
+  <p class="muted">Each UART is also on its own TCP port, raw: connecting here takes it over from socat, and socat takes it back the same way. Click the terminal to type; Ctrl-C over a selection copies it.</p>
+  </div>
+</section>
+</div>
+
+<div class="pane narrow" data-pane="flash">
 <section class="card" id="flash-card">
   <div class="card-h"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="12" height="14" rx="1.5"/><path d="M3 8h3M3 12h3M3 16h3M18 8h3M18 12h3M18 16h3"/></svg><h2>Flash chip</h2><span class="end"><span class="badge" id="lent-badge">idle</span></span></div>
   <div class="card-b">
+  <p class="note-box" id="flash-off" hidden>The flash programmer is off: UART 2 and 3 use the clip's pins. Set the UARTs back to 1 in Settings to use it.</p>
+  <div id="flash-on">
   <p class="muted">The camera's SPI flash through a SOIC-8 clip, for flashrom 1.4.0 or later.</p>
   <div id="serprog-cmds"></div>
   <div class="setting">
@@ -174,15 +202,49 @@ footer .v { color: var(--ink2); }
   </div>
   <div class="diagram" id="clip"></div>
   </div>
+  </div>
 </section>
 </div>
-<div class="col">
+
+<div class="pane" data-pane="wiring">
 <section class="card">
-  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></svg><h2>Flash the camera</h2></div>
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M9 3v4M15 3v4M7 7h10v5a5 5 0 0 1-10 0zM12 17v4"/></svg><h2>Wiring</h2><span class="end"><select id="board" aria-label="Board"></select></span></div>
   <div class="card-b">
-  <p class="muted">Through this backpack's dfu-remote daemon, from a computer or the web flasher in remote mode.</p>
-  <div id="dfu-cmds"></div>
-  <details><summary>Addresses</summary><div class="addrs" id="addrs"></div></details>
+  <div class="diagram" id="board-svg"></div>
+  <div class="legend">
+    <span style="--c:var(--r-pwr)">camera control</span>
+    <span style="--c:var(--r-uart)">UART</span>
+    <span style="--c:var(--r-usb)">USB</span>
+    <span style="--c:var(--r-flash)">flash clip</span>
+    <span style="--c:var(--r-vcc)">flash VCC</span>
+    <span style="--c:var(--r-gnd)">ground</span>
+  </div>
+  <table class="pins" id="pin-table"></table>
+  </div>
+</section>
+</div>
+
+<div class="pane" data-pane="settings"><div class="grid2">
+<section class="card wide">
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg><h2>UARTs</h2><span class="end"><span class="seg" id="uart-count"></span></span></div>
+  <div class="card-b">
+  <p class="muted">Up to three consoles, for a camera with more than one chip to watch: the SoC, a battery or motor MCU, a Wi-Fi chip. UART 2 and 3 use the flash clip's pins, so turning them on turns the flash programmer off; UART 3 also takes the backpack's own log UART. Changing the number restarts the backpack.</p>
+  <table class="uarts" id="uart-table"></table>
+  </div>
+</section>
+<section class="card">
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M3 8h3l2-3h8l2 3h3v11H3z"/><circle cx="12" cy="13" r="3.5"/></svg><h2>Camera</h2></div>
+  <div class="card-b">
+    <div class="setting" style="border-top:0;padding-top:0">
+      <span class="name">BOOTSEL</span>
+      <span class="seg" data-setting="bootsel"><button data-v="low">Pulled low</button><button data-v="high">Driven high</button></span>
+      <span class="help">For boards that bring out the SoC's boot select. It moves with the boot pin; driven high only while the camera is powered.</span>
+    </div>
+    <div class="setting">
+      <span class="name">USB port</span>
+      <span class="seg" data-setting="usb_port"><button data-v="on">Connected</button><button data-v="off">Disconnected</button></span>
+      <span class="help">Disconnected powers the port down and lets go of the lines, for a camera whose SoC hosts a USB Wi-Fi module on them. Entering the bootrom needs it connected.</span>
+    </div>
   </div>
 </section>
 <section class="card" id="wifi-card" hidden>
@@ -209,33 +271,7 @@ footer .v { color: var(--ink2); }
   <p class="muted">A release's <code>-app.bin</code> for this chip. The backpack restarts into it, and goes back to the firmware it runs now if the new one is not on the network within five minutes.</p>
   </div>
 </section>
-</div>
-
-</div>
-
-<section class="card" id="term-card" style="margin-bottom:1rem">
-  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M4 17l6-5-6-5M12 19h8"/></svg><h2>Terminal</h2><span class="end"><span class="badge" id="term-badge">closed</span><button id="term-clear">Clear</button><button class="primary" id="term-open">Connect</button></span></div>
-  <div class="card-b">
-  <pre class="term" id="term" tabindex="0"></pre>
-  <p class="muted">The camera's console, the one on port 3000: connecting takes it over from socat, and socat takes it back the same way. Click the terminal to type; Ctrl-C over a selection copies it.</p>
-  </div>
-</section>
-
-<section class="card">
-  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M9 3v4M15 3v4M7 7h10v5a5 5 0 0 1-10 0zM12 17v4"/></svg><h2>Wiring</h2><span class="end"><select id="board" aria-label="Board"></select></span></div>
-  <div class="card-b">
-  <div class="diagram" id="board-svg"></div>
-  <div class="legend">
-    <span style="--c:var(--r-pwr)">camera control</span>
-    <span style="--c:var(--r-uart)">UART</span>
-    <span style="--c:var(--r-usb)">USB</span>
-    <span style="--c:var(--r-flash)">flash clip</span>
-    <span style="--c:var(--r-vcc)">flash VCC</span>
-    <span style="--c:var(--r-gnd)">ground</span>
-  </div>
-  <table class="pins" id="pin-table"></table>
-  </div>
-</section>
+</div></div>
 </main>
 <footer><a href="https://github.com/thingino/thingino-backpack" target="_blank" rel="noopener">thingino-backpack</a> <span class="v" id="foot-v"></span></footer>
 <div id="toasts"></div>
@@ -304,9 +340,16 @@ function roles(p) {
   const add = (g, short, long, c) => { if (g !== undefined && g !== null) m[g] = { short, long, c }; };
   add(p.power, 'camera power', 'Camera power switch (high: on)', 'pwr');
   add(p.bootsel, 'BOOTSEL', 'Camera SoC BOOTSEL, on boards that bring it out', 'pwr');
-  add(p.tx, 'UART TX', 'UART TX, to the camera\'s RX', 'uart');
-  add(p.rx, 'UART RX', 'UART RX, from the camera\'s TX', 'uart');
-  if (p.clip) {
+  const many = U.count > 1;
+  const n0 = many ? U.uarts[0].name + ' ' : 'UART ';
+  add(p.tx, n0 + 'TX', 'UART 1 TX, to the ' + (many ? U.uarts[0].name : 'camera') + '\'s RX', 'uart');
+  add(p.rx, n0 + 'RX', 'UART 1 RX, from the ' + (many ? U.uarts[0].name : 'camera') + '\'s TX', 'uart');
+  for (let i = 1; i < U.count; i++) {
+    const u = U.uarts[i];
+    add(u.tx, u.name + ' TX', 'UART ' + (i + 1) + ' TX, to the ' + u.name + '\'s RX', 'uart');
+    add(u.rx, u.name + ' RX', 'UART ' + (i + 1) + ' RX, from the ' + u.name + '\'s TX', 'uart');
+  }
+  if (p.clip && !many) {
     add(p.clip.cs, 'flash CS', 'Flash CS, clip pin 1', 'flash');
     add(p.clip.miso, 'flash DO', 'Flash DO, clip pin 2', 'flash');
     add(p.clip.clk, 'flash CLK', 'Flash CLK, clip pin 6', 'flash');
@@ -495,6 +538,79 @@ function drawBoard() {
 
 let info = null;
 let camState = null;
+// The UARTs: how many are on, how many the chip has room for, and each one's settings.
+let U = { count: 1, max: 1, uarts: [] };
+const BAUDS = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000];
+
+function showTab(name) {
+  if (!document.querySelector('.pane[data-pane="' + name + '"]')) name = 'camera';
+  for (const b of $('tabs').children) b.classList.toggle('sel', b.dataset.tab === name);
+  for (const el of document.querySelectorAll('.pane')) el.classList.toggle('on', el.dataset.pane === name);
+  try { localStorage.setItem('backpack-tab', name); } catch (e) { /* private mode */ }
+  history.replaceState(null, '', '#' + name);
+  if (name === 'terminal') { termCols(); T.el.focus(); }
+  if (name === 'camera') fitAddrs();
+}
+$('tabs').onclick = (e) => { const b = e.target.closest('button'); if (b) showTab(b.dataset.tab); };
+
+async function loadUarts() {
+  const r = await call('/api/uarts');
+  U = r.ok === false || !r.uarts ? { count: 1, max: 1, uarts: [{ name: 'Camera SoC', baud: 115200, tx: info.pins.tx, rx: info.pins.rx, port: info.ports.console }] } : r;
+  renderUarts();
+}
+
+function renderUarts() {
+  const count = $('uart-count');
+  count.innerHTML = '';
+  for (let n = 1; n <= U.max; n++) count.insertAdjacentHTML('beforeend', '<button data-v="' + n + '">' + n + '</button>');
+  seg(count, String(U.count));
+  let h = '<tr><th>#</th><th>Name</th><th>Baud</th><th>Pins</th><th>Port</th></tr>';
+  U.uarts.forEach((u, i) => {
+    const bauds = BAUDS.includes(u.baud) ? BAUDS : BAUDS.concat(u.baud).sort((a, b) => a - b);
+    h += '<tr class="' + (i < U.count ? '' : 'off') + '"><td>' + (i + 1) + '</td>'
+      + '<td><input data-name="' + i + '" value="' + esc(u.name) + '" maxlength="24" aria-label="UART ' + (i + 1) + ' name"></td>'
+      + '<td><select data-baud="' + i + '" aria-label="UART ' + (i + 1) + ' baud rate">' + bauds.map((b) => '<option' + (b === u.baud ? ' selected' : '') + '>' + b + '</option>').join('') + '</select></td>'
+      + '<td><code>TX GPIO' + u.tx + ' · RX GPIO' + u.rx + '</code></td><td><code>' + u.port + '</code></td></tr>';
+  });
+  $('uart-table').innerHTML = h;
+  // A socat line per UART on, each on its own port.
+  const host = info.name + '.local';
+  $('console-cmds').innerHTML = U.count < 2 ? cmd('socat -,rawer,escape=0x1d tcp:' + host + ':' + info.ports.console)
+    : U.uarts.slice(0, U.count).map((u) => '<div class="muted" style="margin-top:.5rem">' + esc(u.name) + '</div>' + cmd('socat -,rawer,escape=0x1d tcp:' + host + ':' + u.port)).join('');
+  const sw = $('term-uarts');
+  sw.innerHTML = U.uarts.slice(0, U.count).map((u, i) => '<button data-v="' + i + '">' + esc(u.name) + '</button>').join('');
+  sw.hidden = U.count < 2;
+  termShow(Math.min(T ? T.i : 0, U.count - 1));
+  const off = U.count > 1 || !info.pins.clip;
+  $('flash-off').hidden = !off;
+  $('flash-on').hidden = off;
+  $('lent-badge').hidden = off;
+  drawBoard();
+  $('pin-table').innerHTML = pinTable(info.pins, roles(info.pins));
+}
+
+$('uart-count').onclick = async (e) => {
+  const b = e.target.closest('button');
+  if (!b || b.classList.contains('sel')) return;
+  const n = Number(b.dataset.v);
+  const what = n > 1 ? ' UART ' + (n > 2 ? '2 and 3 take' : '2 takes') + ' the flash clip\'s pins, so the flash programmer goes off.' : ' The flash programmer comes back.';
+  if (!confirm('Turn ' + n + ' UART' + (n > 1 ? 's' : '') + ' on? The backpack restarts.' + what)) return;
+  const r = await act('/api/uarts?count=' + n);
+  if (r.ok) { U.count = n; renderUarts(); setTimeout(() => location.reload(), 12000); }
+};
+$('uart-table').addEventListener('change', async (e) => {
+  const t = e.target;
+  if (t.dataset.name !== undefined) {
+    const i = Number(t.dataset.name), name = t.value.trim() || 'UART ' + (i + 1);
+    const r = await act('/api/uarts?uart=' + i + '&name=' + encodeURIComponent(name));
+    if (r.ok) { U.uarts[i].name = name; renderUarts(); }
+  } else if (t.dataset.baud !== undefined) {
+    const i = Number(t.dataset.baud);
+    const r = await act('/api/uarts?uart=' + i + '&baud=' + t.value);
+    if (r.ok) U.uarts[i].baud = Number(t.value);
+  }
+});
+$('term-uarts').onclick = (e) => { const b = e.target.closest('button'); if (b) termShow(Number(b.dataset.v), true); };
 
 function seg(el, value) {
   for (const b of el.querySelectorAll('button')) b.classList.toggle('sel', b.dataset.v === value);
@@ -568,13 +684,12 @@ async function init() {
   $('addrs').innerHTML = info.endpoints.map((a) => '<div>' + esc(a) + '</div>').join('');
   $('addrs').closest('details').addEventListener('toggle', fitAddrs);
   addEventListener('resize', fitAddrs);
-  $('console-cmds').innerHTML = cmd('socat -,rawer,escape=0x1d tcp:' + host + ':' + info.ports.console);
   $('rfc-cmds').innerHTML = cmd('rfc2217://' + host + ':' + info.ports.rfc2217);
   if (info.pins.clip) {
     $('serprog-cmds').innerHTML = cmd('flashrom -p serprog:ip=' + host + ':' + info.ports.serprog + ' -r dump.bin');
     $('clip').innerHTML = clipSvg(info.pins.clip, info.pins.boot);
   } else {
-    $('flash-card').hidden = true;
+    $('flash-off').textContent = 'This build has no flash programmer.';
   }
   const sel = $('board');
   for (const [k, b] of Object.entries(BOARDS)) if (b.chip === info.chip) sel.add(new Option(b.name, k));
@@ -583,8 +698,10 @@ async function init() {
   try { saved = localStorage.getItem('backpack-board'); } catch (e) { /* private mode */ }
   if (saved && [...sel.options].some((o) => o.value === saved)) sel.value = saved;
   sel.onchange = drawBoard;
-  drawBoard();
-  $('pin-table').innerHTML = pinTable(info.pins, roles(info.pins));
+  await loadUarts();
+  let tab = location.hash.slice(1);
+  try { tab = tab || localStorage.getItem('backpack-tab'); } catch (e) { /* private mode */ }
+  showTab(tab || 'camera');
   if (info.wifi) { $('wifi-card').hidden = false; loadWifi(); }
   pollCamera(); setInterval(pollCamera, 2000);
   loadFlash(); loadFirmware();
@@ -654,7 +771,46 @@ const PALETTE = ['#484f58', '#ff7b72', '#3fb950', '#d29922', '#58a6ff', '#bc8cff
   '#6e7681', '#ffa198', '#56d364', '#e3b341', '#79c0ff', '#d2a8ff', '#56d4dd', '#f0f6fc'];
 const KEYS = { Enter: '\r', Backspace: '\x7f', Tab: '\t', Escape: '\x1b', ArrowUp: '\x1b[A', ArrowDown: '\x1b[B',
   ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D', Home: '\x1b[H', End: '\x1b[F', Delete: '\x1b[3~', PageUp: '\x1b[5~', PageDown: '\x1b[6~' };
-const T = { ws: null, el: $('term'), line: null, cells: [], x: 0, cols: 80, fg: null, bg: null, bold: false, style: '', esc: null, homed: false, dec: null };
+// One screen per UART, so each keeps its scrollback; T is the one shown, and the only one
+// that may be connected.
+const TS = [];
+let T = null;
+
+function termFor(i) {
+  if (!TS[i]) {
+    const el = document.createElement('pre');
+    el.className = 'term';
+    el.tabIndex = 0;
+    $('terms').append(el);
+    const keep = T;
+    T = TS[i] = { i, ws: null, el, line: null, cells: [], x: 0, cols: 80, fg: null, bg: null, bold: false, style: '', esc: null, homed: false, dec: null };
+    termLine();
+    termBind(el);
+    T = keep || T;
+  }
+  return TS[i];
+}
+function termShow(i, reconnect) {
+  const was = T;
+  const live = !!(was && was.ws);
+  if (was && was.i !== i && live) termClose();
+  T = termFor(i);
+  for (const t of TS) if (t) t.el.hidden = t !== T;
+  seg($('term-uarts'), String(i));
+  termState(!!T.ws);
+  if (reconnect && live && !T.ws) termOpen();
+  if (reconnect) T.el.focus();
+}
+// Runs `fn` against terminal `t`, whichever is shown.
+function termOn(t, fn) { const keep = T; T = t; try { fn(); } finally { T = keep; } }
+function termClose() {
+  const ws = T.ws;
+  if (!ws) return;
+  T.ws = null;
+  ws.close();
+  termState(false);
+  termNote('disconnected');
+}
 
 function termCols() {
   const probe = document.createElement('span');
@@ -766,25 +922,25 @@ function termState(open) {
 }
 function termOpen() {
   termCols();
+  const t = T;
   const host = info.console_host || location.host;
-  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/api/console');
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/api/console?uart=' + t.i);
   ws.binaryType = 'arraybuffer';
-  T.dec = new TextDecoder();
-  T.ws = ws;
-  ws.onopen = () => { termState(true); termNote('connected to the camera console'); T.el.focus(); };
-  ws.onmessage = (e) => {
-    if (typeof e.data === 'string') { termNote(e.data); ws.close(); } else termFeed(T.dec.decode(e.data, { stream: true }));
-  };
-  ws.onclose = () => { if (T.ws === ws) { T.ws = null; termState(false); termNote('disconnected'); } };
+  t.dec = new TextDecoder();
+  t.ws = ws;
+  const name = U.uarts[t.i] ? U.uarts[t.i].name : 'camera';
+  ws.onopen = () => termOn(t, () => { if (t === T) termState(true); termNote('connected to ' + name); t.el.focus(); });
+  ws.onmessage = (e) => termOn(t, () => {
+    if (typeof e.data === 'string') { termNote(e.data); ws.close(); } else termFeed(t.dec.decode(e.data, { stream: true }));
+  });
+  ws.onclose = () => termOn(t, () => { if (t.ws === ws) { t.ws = null; if (t === TS[t.i]) termState(false); termNote('disconnected'); } });
   ws.onerror = () => toast('The terminal could not connect.', true);
 }
-if (!T.line) termLine();
-$('term-open').onclick = () => {
-  if (T.ws) { const ws = T.ws; T.ws = null; ws.close(); termState(false); termNote('disconnected'); } else termOpen();
-};
+$('term-open').onclick = () => { if (T.ws) termClose(); else termOpen(); };
 $('term-clear').onclick = () => { T.el.textContent = ''; termLine(); T.el.focus(); };
-addEventListener('resize', termCols);
-T.el.addEventListener('keydown', (e) => {
+addEventListener('resize', () => { if (T) termCols(); });
+function termBind(el) {
+el.addEventListener('keydown', (e) => {
   if (!T.ws || e.metaKey) return;
   const k = e.key;
   let s;
@@ -799,11 +955,12 @@ T.el.addEventListener('keydown', (e) => {
   e.preventDefault();
   termSend(s);
 });
-T.el.addEventListener('paste', (e) => {
+el.addEventListener('paste', (e) => {
   if (!T.ws) return;
   e.preventDefault();
   termSend(e.clipboardData.getData('text').replace(/\r?\n/g, '\r'));
 });
+}
 
 init();
 </script>
