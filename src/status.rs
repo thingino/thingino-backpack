@@ -90,6 +90,14 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
                 .write_all(PAGE.as_bytes())
         })
         .map_err(|err| format!("status page: {err}"))?;
+    for (path, font) in FONTS {
+        server
+            .fn_handler(path, Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
+                req.into_response(200, None, &[("Content-Type", "font/woff2"), ("Cache-Control", "max-age=31536000, immutable")])?
+                    .write_all(font)
+            })
+            .map_err(|err| format!("status page: {err}"))?;
+    }
     server
         .fn_handler("/api/info", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
             json(req, &info_json(&name, pins, has_wifi))
@@ -261,6 +269,13 @@ pub(crate) fn endpoints() -> Vec<String> {
 
 /// The page: static, as everything that varies comes from `/api/info` and the others.
 const PAGE: &str = include_str!("status.html");
+
+/// The thingino apps' typeface, the two weights the page uses: Montserrat, latin subset, under
+/// the SIL Open Font License (`fonts/OFL.txt`).
+const FONTS: [(&str, &[u8]); 2] = [
+    ("/montserrat-400.woff2", include_bytes!("fonts/montserrat-400.woff2")),
+    ("/montserrat-600.woff2", include_bytes!("fonts/montserrat-600.woff2")),
+];
 
 /// The unit's facts for the page: its names, ports and addresses, and the GPIOs in use.
 /// `camera` is the power, boot pin and BOOTSEL GPIOs.

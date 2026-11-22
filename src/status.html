@@ -5,103 +5,113 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>thingino backpack</title>
 <style>
+@font-face { font-family: Montserrat; font-weight: 400; font-display: swap; src: url(/montserrat-400.woff2) format("woff2"); }
+@font-face { font-family: Montserrat; font-weight: 600; font-display: swap; src: url(/montserrat-600.woff2) format("woff2"); }
+/* The thingino theme's tokens, as the web flasher, image builder and buildscope use them. */
 :root {
-  --bg: #0d1117; --s1: #161b22; --s2: #21262d; --line: #30363d;
+  --bg: #0d1117; --s1: #161b22; --s2: #21262d; --track: #010409; --line: #30363d;
   --ink: #c9d1d9; --ink-hi: #e6edf3; --ink2: #8b949e; --ink3: #6e7681;
   --accent: #ff8c00; --accent-hi: #ff9e2c; --on-accent: #0d1117;
   --good: #3fb950; --warn: #d29922; --crit: #f85149;
   --r-pwr: #ff8c00; --r-uart: #199e70; --r-usb: #3987e5; --r-flash: #d55181; --r-vcc: #f85149; --r-gnd: #8b949e;
   --board: #1b2a1f; --board-edge: #2f4a35; --pad: #c9a227;
+  --sans: Montserrat, system-ui, sans-serif;
   --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
 }
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f6f8fa; --s1: #ffffff; --s2: #f0f2f5; --line: #d0d7de;
-    --ink: #1f2328; --ink-hi: #0d1117; --ink2: #59636e; --ink3: #818b98;
-    --accent: #e07800; --accent-hi: #c96b00; --on-accent: #ffffff;
-    --board: #2a5a34; --board-edge: #1f4527;
-    color-scheme: light;
-  }
-}
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
-.bar { max-width: 1180px; margin: 0 auto; padding: .7rem 1rem; display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
-.logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; font-weight: 800; }
-.bar h1 { font-size: 1.05rem; margin: 0; color: var(--ink-hi); font-weight: 650; }
-.bar .meta { color: var(--ink2); font-size: .85rem; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.55 var(--sans); }
+a { color: var(--ink2); text-decoration: none; }
+a:hover { color: var(--ink-hi); }
+code { font: .9em var(--mono); color: var(--accent); }
+header { border-bottom: 1px solid var(--line); }
+.bar { max-width: 1180px; margin: 0 auto; padding: .75rem 1rem; display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.mark { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 5px; background: var(--s2); }
+.mark i { width: 6px; height: 14px; border-radius: 1px; background: var(--ink3); }
+.mark i:first-child { width: 9px; background: var(--accent); }
+.mark i:nth-child(2) { background: var(--accent); opacity: .55; }
+.brand { color: var(--accent); font-weight: 600; font-size: 1.15rem; }
+.unit { color: var(--ink-hi); font-weight: 600; }
+.meta { color: var(--ink2); font-size: .85rem; }
 .pill { margin-left: auto; display: inline-flex; align-items: center; gap: .4rem; padding: .2rem .65rem; border-radius: 99px; background: var(--s2); border: 1px solid var(--line); font-size: .8rem; color: var(--ink2); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink3); }
 .dot.on { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent); }
 .dot.off { background: var(--crit); }
-main { max-width: 1180px; margin: 0 auto; padding: 1rem; display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); align-items: start; }
-.card { background: var(--s1); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem 1.1rem; min-width: 0; }
-.card.wide { grid-column: 1 / -1; }
-.card h2 { margin: 0 0 .75rem; font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ink2); display: flex; align-items: center; gap: .5rem; }
-.card h2 .badge { margin-left: auto; text-transform: none; letter-spacing: 0; }
-p { margin: .4rem 0; }
-.muted { color: var(--ink2); font-size: .87rem; }
-.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: .5rem; margin-bottom: .9rem; }
-.stat { background: var(--s2); border-radius: 8px; padding: .5rem .7rem; }
-.stat .k { font-size: .72rem; color: var(--ink2); text-transform: uppercase; letter-spacing: .06em; }
-.stat .v { font-size: 1rem; color: var(--ink-hi); font-weight: 600; overflow-wrap: anywhere; }
-.badge { display: inline-block; padding: .05rem .5rem; border-radius: 99px; font-size: .75rem; font-weight: 600; background: var(--s2); color: var(--ink2); border: 1px solid var(--line); }
-.badge.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
-.badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
-.badge.crit { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 45%, transparent); }
-.row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
-button, .btn { font: inherit; font-size: .9rem; padding: .45rem .85rem; border-radius: 8px; border: 1px solid var(--line); background: var(--s2); color: var(--ink-hi); cursor: pointer; transition: background .12s, border-color .12s; }
-button:hover { border-color: var(--ink3); }
+main { max-width: 1180px; margin: 0 auto; padding: 1rem; }
+/* Columns rather than a grid: each card sits right under the one above it, whatever their heights. */
+.cols { columns: 3 330px; column-gap: 1rem; }
+.card { break-inside: avoid; margin: 0 0 1rem; background: var(--s1); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.card-h { display: flex; align-items: center; gap: .55rem; padding: .6rem 1rem; background: var(--s2); border-bottom: 1px solid var(--line); }
+.card-h h2 { margin: 0; font-size: 1rem; font-weight: 600; color: var(--accent); }
+.card-h svg { width: 18px; height: 18px; flex: none; stroke: var(--accent); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.card-h .end { margin-left: auto; display: flex; gap: .4rem; align-items: center; }
+.card-b { padding: .85rem 1rem 1rem; }
+p { margin: .35rem 0; }
+.muted { color: var(--ink2); font-size: .88rem; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; margin-bottom: .85rem; }
+.stat { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: .45rem .65rem; }
+.stat .k { font-size: .7rem; color: var(--ink2); text-transform: uppercase; letter-spacing: .08em; }
+.stat .v { color: var(--ink-hi); font-weight: 600; overflow-wrap: anywhere; }
+.badge { display: inline-block; padding: .1rem .5rem; border-radius: 99px; font-size: .75rem; font-weight: 600; background: var(--ink3); color: var(--bg); }
+.badge.good { background: var(--good); }
+.badge.warn { background: var(--warn); }
+.badge.crit { background: var(--crit); }
+.row { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; }
+button { font: 500 .85rem var(--sans); padding: .4rem .8rem; border-radius: 6px; border: 1px solid var(--line); background: var(--s2); color: var(--ink-hi); cursor: pointer; transition: background .12s, border-color .12s; }
+button:hover { border-color: var(--ink3); background: #262c34; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 button.primary:hover { background: var(--accent-hi); }
-button.danger { color: var(--crit); }
-button:disabled { opacity: .5; cursor: default; }
-input[type=file] { color: var(--ink2); font-size: .85rem; }
-input[type=file]::file-selector-button { font: inherit; padding: .4rem .75rem; margin-right: .6rem; border-radius: 8px; border: 1px solid var(--line); background: var(--s2); color: var(--ink-hi); cursor: pointer; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.seg button { border: 0; border-radius: 0; background: transparent; color: var(--ink2); padding: .35rem .75rem; }
+button.danger { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 45%, var(--line)); }
+button:disabled { opacity: .45; cursor: default; }
+input[type=file] { color: var(--ink2); font: .85rem var(--sans); max-width: 100%; }
+input[type=file]::file-selector-button { font: 500 .85rem var(--sans); padding: .4rem .8rem; margin-right: .6rem; border-radius: 6px; border: 1px solid var(--line); background: var(--s2); color: var(--ink-hi); cursor: pointer; }
+select { max-width: 260px; font: .85rem var(--sans); padding: .35rem .55rem; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-hi); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: var(--bg); color: var(--ink2); padding: .3rem .7rem; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.sel { background: var(--accent); color: var(--on-accent); font-weight: 600; }
-.setting { display: grid; grid-template-columns: 1fr auto; gap: .2rem 1rem; align-items: center; padding: .65rem 0; border-top: 1px solid var(--line); }
-.setting:first-of-type { border-top: 0; }
-.setting .name { color: var(--ink-hi); font-weight: 550; }
-.setting .help { grid-column: 1 / -1; color: var(--ink2); font-size: .84rem; }
-.cmd { display: flex; align-items: stretch; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; margin: .45rem 0; }
-.cmd code { flex: 1; padding: .5rem .7rem; font: .85rem var(--mono); white-space: nowrap; overflow-x: auto; color: var(--ink-hi); }
-.cmd button { border: 0; border-left: 1px solid var(--line); border-radius: 0 8px 8px 0; background: transparent; color: var(--ink2); padding: 0 .75rem; font-size: .8rem; }
-.cmd button:hover { color: var(--accent); }
-.addrs { font: .85rem/1.7 var(--mono); color: var(--ink-hi); padding: .3rem 0 0 .9rem; }
+.setting { display: grid; grid-template-columns: 1fr auto; gap: .25rem 1rem; align-items: center; padding: .6rem 0; border-top: 1px solid var(--line); }
+.setting .name { color: var(--ink-hi); font-weight: 600; }
+.setting .help { grid-column: 1 / -1; color: var(--ink2); font-size: .82rem; }
+.cmd { display: flex; align-items: stretch; background: var(--track); border: 1px solid var(--line); border-radius: 6px; margin: .45rem 0; }
+.cmd code { flex: 1; padding: .45rem .65rem; font-size: .8rem; white-space: nowrap; overflow-x: auto; color: var(--ink-hi); }
+.cmd button { border: 0; border-left: 1px solid var(--line); border-radius: 0 6px 6px 0; background: transparent; color: var(--ink2); padding: 0 .7rem; font-size: .78rem; }
+.cmd button:hover { color: var(--accent); background: transparent; }
+.addrs { font: .8rem/1.7 var(--mono); color: var(--ink-hi); padding: .3rem 0 0 .9rem; }
 .addrs div { white-space: nowrap; overflow: hidden; }
-details { margin-top: .8rem; border-top: 1px solid var(--line); padding-top: .4rem; }
-summary { cursor: pointer; color: var(--ink2); font-size: .88rem; padding: .3rem 0; }
-select { font: inherit; font-size: .9rem; padding: .4rem .6rem; border-radius: 8px; border: 1px solid var(--line); background: var(--s2); color: var(--ink-hi); }
-.diagram { background: var(--s2); border-radius: 10px; padding: .6rem; margin-top: .6rem; }
+details { margin-top: .75rem; border-top: 1px solid var(--line); padding-top: .35rem; }
+summary { cursor: pointer; color: var(--ink2); font-size: .85rem; padding: .25rem 0; }
+.diagram { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: .6rem; margin-top: .6rem; }
 .diagram svg { display: block; width: 100%; height: auto; }
-.legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; margin: .7rem 0 0; font-size: .82rem; color: var(--ink2); }
+.legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; margin: .7rem 0 0; font-size: .8rem; color: var(--ink2); }
 .legend span::before { content: ""; display: inline-block; width: .7rem; height: .7rem; border-radius: 3px; margin-right: .35rem; vertical-align: -1px; background: var(--c); }
-table.pins { width: 100%; border-collapse: collapse; font-size: .86rem; margin-top: .8rem; }
+table.pins { width: 100%; border-collapse: collapse; font-size: .84rem; margin-top: .8rem; }
 table.pins td { padding: .3rem .4rem; border-top: 1px solid var(--line); vertical-align: top; }
 table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width: 1%; }
 .sw { display: inline-block; width: .65rem; height: .65rem; border-radius: 3px; margin-right: .4rem; }
-.progress { height: 6px; background: var(--s2); border-radius: 99px; overflow: hidden; margin-top: .6rem; display: none; }
+.progress { height: 6px; background: var(--bg); border-radius: 99px; overflow: hidden; margin-top: .6rem; display: none; }
 .progress div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+footer { text-align: center; color: var(--ink3); font-size: .875rem; padding: 0 1rem 1.5rem; }
+footer .v { color: var(--ink2); }
 #toasts { position: fixed; right: 1rem; bottom: 1rem; display: grid; gap: .5rem; z-index: 10; max-width: min(420px, calc(100vw - 2rem)); }
-.toast { background: var(--s1); border: 1px solid var(--line); border-left: 4px solid var(--good); border-radius: 8px; padding: .6rem .8rem; box-shadow: 0 8px 24px rgb(0 0 0 / .3); font-size: .9rem; animation: in .18s ease-out; }
+.toast { background: var(--s1); border: 1px solid var(--line); border-left: 4px solid var(--good); border-radius: 6px; padding: .55rem .8rem; box-shadow: 0 8px 24px rgb(0 0 0 / .4); font-size: .88rem; animation: in .18s ease-out; }
 .toast.bad { border-left-color: var(--crit); }
 @keyframes in { from { transform: translateY(8px); opacity: 0; } }
 </style>
 </head>
 <body>
 <header><div class="bar">
-  <div class="logo">t</div>
-  <div><h1 id="name">thingino backpack</h1><div class="meta" id="meta">&nbsp;</div></div>
+  <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+  <span class="brand">thingino backpack</span>
+  <span><span class="unit" id="name">&nbsp;</span> <span class="meta" id="meta"></span></span>
   <span class="pill"><span class="dot" id="dot"></span><span id="online">connecting</span></span>
 </div></header>
 
 <main>
+<div class="cols">
 <section class="card">
-  <h2>Camera <span class="badge" id="power-badge">…</span></h2>
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M3 8h3l2-3h8l2 3h3v11H3z"/><circle cx="12" cy="13" r="3.5"/></svg><h2>Camera</h2><span class="end"><span class="badge" id="power-badge">…</span></span></div>
+  <div class="card-b">
   <div class="stats">
     <div class="stat"><div class="k">Power</div><div class="v" id="st-power">…</div></div>
     <div class="stat"><div class="k">Boot pin</div><div class="v" id="st-boot">…</div></div>
@@ -128,25 +138,22 @@ table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width
       <span class="help">Disconnected powers the port down and lets go of the lines, for a camera whose SoC hosts a USB Wi-Fi module on them. Entering the bootrom needs it connected.</span>
     </div>
   </details>
+  </div>
 </section>
 
 <section class="card">
-  <h2>Flash the camera</h2>
-  <p class="muted">The camera is flashed through this backpack's dfu-remote daemon, from a computer or the web flasher in remote mode.</p>
-  <div id="dfu-cmds"></div>
-  <details><summary>Addresses</summary><div class="addrs" id="addrs"></div></details>
-</section>
-
-<section class="card">
-  <h2>Console</h2>
+  <div class="card-h"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><h2>Console</h2></div>
+  <div class="card-b">
   <p class="muted">The camera's serial console, raw, one client at a time; a new one takes over. Ctrl-] leaves.</p>
   <div id="console-cmds"></div>
   <p class="muted">RFC 2217, for tools that set the baud rate or send a break. Its DTR holds the boot pin and RTS cuts the power, as esptool's auto-reset does.</p>
   <div id="rfc-cmds"></div>
+  </div>
 </section>
 
 <section class="card" id="flash-card">
-  <h2>Flash chip <span class="badge" id="lent-badge">idle</span></h2>
+  <div class="card-h"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="12" height="14" rx="1.5"/><path d="M3 8h3M3 12h3M3 16h3M18 8h3M18 12h3M18 16h3"/></svg><h2>Flash chip</h2><span class="end"><span class="badge" id="lent-badge">idle</span></span></div>
+  <div class="card-b">
   <p class="muted">The camera's SPI flash through a SOIC-8 clip, for flashrom 1.4.0 or later.</p>
   <div id="serprog-cmds"></div>
   <div class="setting">
@@ -160,12 +167,22 @@ table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width
     <span class="help">Chips in quad mode ignore HOLD, so it can be left alone for them.</span>
   </div>
   <div class="diagram" id="clip"></div>
+  </div>
 </section>
 
+<section class="card">
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></svg><h2>Flash the camera</h2></div>
+  <div class="card-b">
+  <p class="muted">Through this backpack's dfu-remote daemon, from a computer or the web flasher in remote mode.</p>
+  <div id="dfu-cmds"></div>
+  <details><summary>Addresses</summary><div class="addrs" id="addrs"></div></details>
+  </div>
+</section>
 
 <section class="card" id="wifi-card" hidden>
-  <h2>Wi-Fi</h2>
-  <div class="setting">
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r=".8"/></svg><h2>Wi-Fi</h2></div>
+  <div class="card-b">
+  <div class="setting" style="border-top:0;padding-top:0">
     <span class="name">TX power</span>
     <span class="row"><select id="tx-power"></select><button id="tx-set">Apply</button></span>
     <span class="help" id="tx-help">The most the radio transmits at.</span>
@@ -175,18 +192,24 @@ table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width
     <button class="danger" id="wifi-reset">Reset Wi-Fi</button>
     <span class="help">Erases the saved network and restarts into the setup portal, an open access point.</span>
   </div>
+  </div>
 </section>
 
 <section class="card">
-  <h2>Firmware <span class="badge" id="fw-state">…</span></h2>
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M4 20h16"/></svg><h2>Firmware</h2><span class="end"><span class="badge" id="fw-state">…</span></span></div>
+  <div class="card-b">
   <p id="fw-now" class="muted">&nbsp;</p>
   <div class="row"><input type="file" id="fw-file" accept=".bin"><button class="primary" id="fw-send" disabled>Update</button></div>
   <div class="progress" id="fw-progress"><div></div></div>
   <p class="muted">A release's <code>-app.bin</code> for this chip. The backpack restarts into it, and goes back to the firmware it runs now if the new one is not on the network within five minutes.</p>
+  </div>
 </section>
 
-<section class="card wide">
-  <h2>Wiring <span class="badge" style="margin-left:auto"><select id="board" aria-label="Board"></select></span></h2>
+</div>
+
+<section class="card">
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M9 3v4M15 3v4M7 7h10v5a5 5 0 0 1-10 0zM12 17v4"/></svg><h2>Wiring</h2><span class="end"><select id="board" aria-label="Board"></select></span></div>
+  <div class="card-b">
   <div class="diagram" id="board-svg"></div>
   <div class="legend">
     <span style="--c:var(--r-pwr)">camera control</span>
@@ -197,8 +220,10 @@ table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width
     <span style="--c:var(--r-gnd)">ground</span>
   </div>
   <table class="pins" id="pin-table"></table>
+  </div>
 </section>
 </main>
+<footer><a href="https://github.com/thingino/thingino-backpack" target="_blank" rel="noopener">thingino-backpack</a> <span class="v" id="foot-v"></span></footer>
 <div id="toasts"></div>
 
 <script>
@@ -357,7 +382,7 @@ function boardSvg(b, rm) {
   });
   const top = b.usbAt === 'top';
   const y0 = by + (top ? rowsTop : 40);
-  let s = '<svg viewBox="0 0 ' + W + ' ' + (bh + 40) + '" font-family="system-ui, sans-serif" role="img" aria-label="' + esc(b.name) + ' wiring">';
+  let s = '<svg viewBox="0 0 ' + W + ' ' + (bh + 40) + '" font-family="Montserrat, system-ui, sans-serif" role="img" aria-label="' + esc(b.name) + ' wiring">';
   s += '<rect x="' + bx + '" y="' + by + '" width="' + bw + '" height="' + bh + '" rx="14" fill="var(--board)" stroke="var(--board-edge)" stroke-width="2"/>';
   // module or chip
   const cx = bx + bw / 2;
@@ -416,9 +441,9 @@ function boardSvg(b, rm) {
 }
 
 function clipSvg(c, boot) {
-  const L = [['CS', 'GPIO' + c.cs, 'flash'], ['DO', 'GPIO' + c.miso, 'flash'], ['WP', 'not connected', null], ['GND', 'GND', 'gnd']];
+  const L = [['CS', 'GPIO' + c.cs, 'flash'], ['DO', 'GPIO' + c.miso, 'flash'], ['WP', 'none', null], ['GND', 'GND', 'gnd']];
   const R = [['VCC', 'GPIO' + c.vcc, 'vcc'], ['HOLD', 'GPIO' + c.hold, 'flash'], ['CLK', 'GPIO' + c.clk, 'flash'], ['DI', 'GPIO' + boot, 'flash']];
-  let s = '<svg viewBox="0 0 600 290" font-family="system-ui, sans-serif" role="img" aria-label="SOIC-8 clip wiring">';
+  let s = '<svg viewBox="0 0 600 290" font-family="Montserrat, system-ui, sans-serif" role="img" aria-label="SOIC-8 clip wiring">';
   s += '<rect x="220" y="20" width="160" height="230" rx="8" fill="#2b2b2b"/><circle cx="244" cy="44" r="7" fill="#d9d9d9"/>';
   s += '<text x="300" y="138" text-anchor="middle" font-size="14" fill="#bbb">flash chip</text><text x="300" y="158" text-anchor="middle" font-size="12" fill="#888">dot = pin 1</text>';
   for (let i = 0; i < 4; i++) {
@@ -426,10 +451,10 @@ function clipSvg(c, boot) {
     const cl = L[i][2] ? ROLE_COLOR[L[i][2]] : 'var(--ink3)', cr = ROLE_COLOR[R[i][2]];
     s += '<rect x="192" y="' + y + '" width="28" height="14" fill="#b0b0b0"/><rect x="380" y="' + y + '" width="28" height="14" fill="#b0b0b0"/>';
     s += '<text x="232" y="' + (y + 12) + '" font-size="13" font-weight="700" fill="#fff">' + (i + 1) + '</text><text x="360" y="' + (y + 12) + '" font-size="13" font-weight="700" fill="#fff">' + (8 - i) + '</text>';
-    s += '<text x="180" y="' + (y + 12) + '" text-anchor="end" font-size="15" font-weight="600" fill="' + cl + '">' + L[i][0] + ' · ' + L[i][1] + '</text>';
-    s += '<text x="420" y="' + (y + 12) + '" font-size="15" font-weight="600" fill="' + cr + '">' + R[i][0] + ' · ' + R[i][1] + '</text>';
+    s += '<text x="180" y="' + (y + 12) + '" text-anchor="end" font-size="21" font-weight="600" fill="' + cl + '">' + L[i][0] + ' · ' + L[i][1] + '</text>';
+    s += '<text x="420" y="' + (y + 12) + '" font-size="21" font-weight="600" fill="' + cr + '">' + R[i][0] + ' · ' + R[i][1] + '</text>';
   }
-  s += '<text x="300" y="278" text-anchor="middle" font-size="12" fill="var(--ink2)">The clip\'s red wire goes on pin 1. Pins count down the left from the dot, then up the right.</text>';
+  s += '<text x="300" y="282" text-anchor="middle" font-size="17" fill="var(--ink2)">Red wire on pin 1, at the dot. 8 is across from 1.</text>';
   return s + '</svg>';
 }
 
@@ -523,6 +548,7 @@ async function init() {
   document.title = info.name;
   $('name').textContent = info.name;
   $('meta').textContent = info.chip + ' · ' + info.version;
+  $('foot-v').textContent = info.version;
   const host = info.name + '.local';
   $('dfu-cmds').innerHTML = cmd('thingino-dfu --host ' + host + ':' + info.ports.dfu + ' -l');
   $('addrs').innerHTML = info.endpoints.map((a) => '<div>' + esc(a) + '</div>').join('');

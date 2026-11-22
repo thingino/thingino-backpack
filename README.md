@@ -477,3 +477,6 @@ network you trust.
 
 GPL-2.0-or-later, the same as thingino-dfu-rs, which the firmware is built on. See
 [`LICENSE`](LICENSE).
+
+The status page's typeface, Montserrat (`src/fonts/`), is under the SIL Open Font License
+1.1; see [`src/fonts/OFL.txt`](src/fonts/OFL.txt).
