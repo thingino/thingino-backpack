@@ -35,11 +35,11 @@ header { border-bottom: 1px solid var(--line); }
 .dot.on { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent); }
 .dot.off { background: var(--crit); }
 main { max-width: 1180px; margin: 0 auto; padding: 1rem; }
-/* Columns rather than a grid: each card sits right under the one above it, whatever their heights. */
-.cols { columns: 3 330px; column-gap: 1rem; }
-/* Inline blocks keep their bottom margin at a column's end, where a block's is dropped. */
-.cols > .card { display: inline-block; width: 100%; }
-.card { break-inside: avoid; margin: 0 0 1rem; background: var(--s1); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+/* Three fixed columns, each card right under the one above it; one column on a narrow screen. */
+.cols { display: flex; gap: 1rem; align-items: flex-start; margin-bottom: 1rem; }
+.col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1rem; }
+@media (max-width: 900px) { .cols { flex-direction: column; align-items: stretch; } }
+.card { margin: 0; background: var(--s1); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .card-h { display: flex; align-items: center; gap: .55rem; padding: .6rem 1rem; background: var(--s2); border-bottom: 1px solid var(--line); }
 .card-h h2 { margin: 0; font-size: 1rem; font-weight: 600; color: var(--accent); }
 .card-h svg { width: 18px; height: 18px; flex: none; stroke: var(--accent); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -109,6 +109,7 @@ footer .v { color: var(--ink2); }
 
 <main>
 <div class="cols">
+<div class="col">
 <section class="card">
   <div class="card-h"><svg viewBox="0 0 24 24"><path d="M3 8h3l2-3h8l2 3h3v11H3z"/><circle cx="12" cy="13" r="3.5"/></svg><h2>Camera</h2><span class="end"><span class="badge" id="power-badge">…</span></span></div>
   <div class="card-b">
@@ -140,7 +141,6 @@ footer .v { color: var(--ink2); }
   </details>
   </div>
 </section>
-
 <section class="card">
   <div class="card-h"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><h2>Console</h2></div>
   <div class="card-b">
@@ -150,7 +150,8 @@ footer .v { color: var(--ink2); }
   <div id="rfc-cmds"></div>
   </div>
 </section>
-
+</div>
+<div class="col">
 <section class="card" id="flash-card">
   <div class="card-h"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="12" height="14" rx="1.5"/><path d="M3 8h3M3 12h3M3 16h3M18 8h3M18 12h3M18 16h3"/></svg><h2>Flash chip</h2><span class="end"><span class="badge" id="lent-badge">idle</span></span></div>
   <div class="card-b">
@@ -169,7 +170,8 @@ footer .v { color: var(--ink2); }
   <div class="diagram" id="clip"></div>
   </div>
 </section>
-
+</div>
+<div class="col">
 <section class="card">
   <div class="card-h"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></svg><h2>Flash the camera</h2></div>
   <div class="card-b">
@@ -178,7 +180,6 @@ footer .v { color: var(--ink2); }
   <details><summary>Addresses</summary><div class="addrs" id="addrs"></div></details>
   </div>
 </section>
-
 <section class="card" id="wifi-card" hidden>
   <div class="card-h"><svg viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r=".8"/></svg><h2>Wi-Fi</h2></div>
   <div class="card-b">
@@ -194,7 +195,6 @@ footer .v { color: var(--ink2); }
   </div>
   </div>
 </section>
-
 <section class="card">
   <div class="card-h"><svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M4 20h16"/></svg><h2>Firmware</h2><span class="end"><span class="badge" id="fw-state">…</span></span></div>
   <div class="card-b">
@@ -204,6 +204,7 @@ footer .v { color: var(--ink2); }
   <p class="muted">A release's <code>-app.bin</code> for this chip. The backpack restarts into it, and goes back to the firmware it runs now if the new one is not on the network within five minutes.</p>
   </div>
 </section>
+</div>
 
 </div>
 
