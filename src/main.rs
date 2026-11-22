@@ -38,6 +38,7 @@ mod ota;
 mod portal;
 mod rfc2217;
 mod serprog;
+mod spi_http;
 mod status;
 mod terminal;
 mod usb;
@@ -72,9 +73,38 @@ const STACKS_EVERY: u32 = 6;
 /// The daemon thread's FreeRTOS handle, for the memory report's stack high-water mark.
 static DAEMON_TASK: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
 
+/// The last panic's message, kept across the restart it causes: RTC memory is not cleared
+/// by a software reset. Valid while it starts with [`PANIC_MAGIC`].
+#[unsafe(link_section = ".rtc_noinit")]
+static mut LAST_PANIC: [u8; 256] = [0; 256];
+const PANIC_MAGIC: &[u8; 4] = b"PNC1";
+
+/// The panic that caused the last restart, if one did.
+pub(crate) fn last_panic() -> Option<String> {
+    // SAFETY: written only by the panic hook, which runs once, before the restart.
+    let kept = unsafe { &*core::ptr::addr_of!(LAST_PANIC) };
+    if unsafe { sys::esp_reset_reason() } != sys::esp_reset_reason_t_ESP_RST_PANIC || &kept[..4] != PANIC_MAGIC {
+        return None;
+    }
+    let text = &kept[4..];
+    let end = text.iter().position(|&byte| byte == 0).unwrap_or(text.len());
+    Some(String::from_utf8_lossy(&text[..end]).into_owned())
+}
+
 fn main() {
     sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let text = info.to_string();
+        // SAFETY: a panic aborts, so nothing else writes the buffer after this.
+        let kept = unsafe { &mut *core::ptr::addr_of_mut!(LAST_PANIC) };
+        kept.fill(0);
+        kept[..4].copy_from_slice(PANIC_MAGIC);
+        let n = text.len().min(kept.len() - 5);
+        kept[4..4 + n].copy_from_slice(&text.as_bytes()[..n]);
+        default(info);
+    }));
     // Once the daemon runs on its own thread this returns, and ESP-IDF deletes the main
     // task and frees its stack.
     if let Err(err) = run() {

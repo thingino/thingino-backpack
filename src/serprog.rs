@@ -143,6 +143,15 @@ pub struct Pins {
 }
 
 static PINS: OnceLock<Pins> = OnceLock::new();
+/// Why the chip was last refused to a client, for one in-process client to tell its user:
+/// serprog itself answers a bare NAK.
+static REFUSED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Why the chip was last refused, if it ever was.
+pub fn last_refusal() -> Option<String> {
+    let why = REFUSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    (!why.is_empty()).then(|| why.clone())
+}
 static NVS: OnceLock<EspDefaultNvsPartition> = OnceLock::new();
 static DRIVE_VCC: AtomicBool = AtomicBool::new(true);
 static DRIVE_HOLD: AtomicBool = AtomicBool::new(true);
@@ -369,6 +378,7 @@ impl Session<'_> {
                 }
                 Err(why) => {
                     warn!("serprog: not driving the clip: {why}");
+                    *REFUSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = why;
                     return NAK;
                 }
             }

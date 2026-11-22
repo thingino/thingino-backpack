@@ -424,6 +424,20 @@ bytes), the length (3) and the page size (2), little-endian, then the data; it a
 once every page is programmed, or NAK. flashrom only uses the commands it knows, so nothing
 changes for it.
 
+#### From a browser
+
+A browser cannot open a TCP socket, so `POST /api/spi` on the status page's port carries the
+same commands: `O_SPIOP`, `O_PROGRAM` and `NOP`, one after another in the request body,
+their answers streamed back in the response. It is a client of the serprog port like any
+other, so flashrom, another client and a browser take turns: one that finds it busy gets a
+`409` after two seconds. The chip stays lent between requests, and goes back five seconds
+after the last one, or at once with `?release=1`.
+
+A page needs Chrome's Local Network Access to reach it from HTTPS (`fetch` with
+`targetAddressSpace: 'local'`), and the unit serves only pages it trusts: scriba's web
+version (`https://scriba.thingino.com`), a page on the computer's own loopback, and its own
+status page. Requests without an `Origin`, from anything but a browser, are served too.
+
 ```sh
 curl -X POST 'http://<host>.local/api/camera?action=power-off'   # when VCC is driven
 flashrom -p serprog:ip=<host>.local:8888                         # probe: names the chip

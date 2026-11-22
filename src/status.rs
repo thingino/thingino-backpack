@@ -7,6 +7,8 @@
 //!
 //! * `GET /api/info`: the unit's name, chip, firmware version, ports, addresses and the
 //!   GPIOs in use, as JSON.
+//! * `POST /api/spi`: serprog commands for the flash programmer, from a browser (see
+//!   [`crate::spi_http`]).
 //! * `GET /api/uarts`: each UART's on, name, baud rate, pins and TCP port, as JSON.
 //! * `POST /api/uarts?uart=<0 to 2>&on=0|1`, `&name=<name>` or `&baud=<rate>`: turns UART 2 or 3
 //!   on or off (a restart), names a UART, or sets its baud rate, now and on every boot after.
@@ -80,12 +82,12 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
     // lwIP's socket budget is shared with the daemon and mDNS, and one browser at a time
     // is all a status page sees; but a browser opens several connections at once, and the
     // server closes the least recently used one when it runs out, which would be a quiet
-    // terminal's. The handlers format onto the heap; a firmware update's
-    // write and verify, the deepest path, left 0.7 KB of 4 KB unused, so 5 KB rather than
-    // esp-idf-svc's 6 KB.
+    // terminal's. The handlers format onto the heap; a firmware update's write and verify
+    // left 0.7 KB of 4 KB unused, but /api/spi, a loopback serprog session inside a
+    // handler, overflowed 5 KB, so 8 KB.
     let mut server = EspHttpServer::new(&Configuration {
         max_open_sockets: 7,
-        stack_size: 5120,
+        stack_size: 8192,
         ..Default::default()
     })
     .map_err(|err| format!("status page: {err}"))?;
@@ -107,6 +109,7 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
             .map_err(|err| format!("status page: {err}"))?;
     }
     crate::terminal::register(&mut server).map_err(|err| format!("status page: {err}"))?;
+    crate::spi_http::register(&mut server).map_err(|err| format!("status page: {err}"))?;
     server
         .fn_handler("/api/info", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
             json(req, &info_json(&name, pins, has_wifi))
@@ -335,10 +338,12 @@ fn info_json(hostname: &str, camera: (i32, i32, i32), wifi: bool) -> String {
         },
     );
     format!(
-        r#"{{"name":"{}","chip":"{}","version":"{}","wifi":{wifi},"ports":{{"dfu":{DEFAULT_PORT},"console":{},"rfc2217":{},"serprog":{}}},"endpoints":[{endpoints}],"pins":{{"power":{},"boot":{},"bootsel":{},"tx":{tx},"rx":{rx},{USB_PINS},"clip":{clip}}}}}"#,
+        r#"{{"name":"{}","chip":"{}","version":"{}","reset":"{}","panic":{},"wifi":{wifi},"ports":{{"dfu":{DEFAULT_PORT},"console":{},"rfc2217":{},"serprog":{}}},"endpoints":[{endpoints}],"pins":{{"power":{},"boot":{},"bootsel":{},"tx":{tx},"rx":{rx},{USB_PINS},"clip":{clip}}}}}"#,
         json_escape(hostname),
         json_escape(&chip()),
         json_escape(&build_id()),
+        reset_reason(),
+        crate::last_panic().map_or_else(|| "null".to_owned(), |text| format!(r#""{}""#, json_escape(&text))),
         console::PORT,
         console::RFC2217_PORT,
         serprog::PORT,
@@ -346,6 +351,22 @@ fn info_json(hostname: &str, camera: (i32, i32, i32), wifi: bool) -> String {
         camera.1,
         camera.2,
     )
+}
+
+/// Why the unit last started: `power-on`, or a crash, a watchdog or a brownout.
+fn reset_reason() -> &'static str {
+    // SAFETY: reads what the startup code recorded.
+    match unsafe { sys::esp_reset_reason() } {
+        sys::esp_reset_reason_t_ESP_RST_POWERON => "power-on",
+        sys::esp_reset_reason_t_ESP_RST_SW => "restart",
+        sys::esp_reset_reason_t_ESP_RST_PANIC => "panic",
+        sys::esp_reset_reason_t_ESP_RST_INT_WDT => "interrupt watchdog",
+        sys::esp_reset_reason_t_ESP_RST_TASK_WDT => "task watchdog",
+        sys::esp_reset_reason_t_ESP_RST_WDT => "watchdog",
+        sys::esp_reset_reason_t_ESP_RST_BROWNOUT => "brownout",
+        sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP => "deep sleep",
+        _ => "other",
+    }
 }
 
 /// Where the camera's USB lands: GPIO pins on the full-speed chips, a port of its own on the
