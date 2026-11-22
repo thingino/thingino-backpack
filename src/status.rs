@@ -94,8 +94,8 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
     let has_wifi = wifi.is_some();
     server
         .fn_handler("/", Method::Get, |req: Request<&mut EspHttpConnection<'_>>| {
-            req.into_response(200, None, &[("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])?
-                .write_all(PAGE.as_bytes())
+            let headers = [("Content-Type", "text/html; charset=utf-8"), ("Content-Encoding", "gzip"), ("Cache-Control", "no-store")];
+            req.into_response(200, None, &headers)?.write_all(PAGE)
         })
         .map_err(|err| format!("status page: {err}"))?;
     for (path, font) in FONTS {
@@ -309,8 +309,9 @@ pub(crate) fn endpoints() -> Vec<String> {
     out
 }
 
-/// The page: static, as everything that varies comes from `/api/info` and the others.
-const PAGE: &str = include_str!("status.html");
+/// The page, `status.html` gzipped by the build: static, as everything that varies comes
+/// from `/api/info` and the others.
+const PAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/status.html.gz"));
 
 /// The thingino apps' typeface, the two weights the page uses: Montserrat, latin subset, under
 /// the SIL Open Font License (`fonts/OFL.txt`).
