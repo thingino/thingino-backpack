@@ -297,6 +297,8 @@ chip, or parked in its bootrom on its own supply: see [VCC and HOLD](#vcc-and-ho
 | none                 | none                 | WP, pin 3: unconnected                              |
 | GND                  | GND                  | GND, pin 4                                          |
 
+![SOIC-8 flash, top view, with the backpack pin for each clip pin](docs/clip-wiring.svg)
+
 - Pin 1 is the chip's dot, and the clip's red wire goes on it. A clip on backwards puts the
   unit's 3.3 V on the chip's ground pin, a short: the unit drops off Wi-Fi and browns out.
 - 3.3 V chips only. A 1.8 V chip (W25Q...W, GD25LQ, MX25U, XM25QU) needs a level shifter

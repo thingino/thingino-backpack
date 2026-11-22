@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380" font-family="Helvetica, Arial, sans-serif">
+  <title>SOIC-8 flash clip wiring</title>
+  <rect width="760" height="380" rx="12" fill="#ffffff"/>
+  <text x="380" y="34" text-anchor="middle" font-size="18" font-weight="bold" fill="#222">SOIC-8 flash, top view: clip pin to backpack pin</text>
+
+  <!-- chip body -->
+  <rect x="290" y="70" width="180" height="250" rx="6" fill="#2b2b2b"/>
+  <circle cx="314" cy="94" r="7" fill="#d9d9d9"/>
+  <text x="380" y="200" text-anchor="middle" font-size="15" fill="#bbbbbb">flash chip</text>
+  <text x="380" y="222" text-anchor="middle" font-size="12" fill="#999999">dot = pin 1</text>
+
+  <!-- legs -->
+  <g fill="#b0b0b0">
+    <rect x="262" y="100" width="28" height="14"/>
+    <rect x="262" y="160" width="28" height="14"/>
+    <rect x="262" y="220" width="28" height="14"/>
+    <rect x="262" y="280" width="28" height="14"/>
+    <rect x="470" y="100" width="28" height="14"/>
+    <rect x="470" y="160" width="28" height="14"/>
+    <rect x="470" y="220" width="28" height="14"/>
+    <rect x="470" y="280" width="28" height="14"/>
+  </g>
+
+  <!-- pin numbers -->
+  <g font-size="14" font-weight="bold" fill="#ffffff">
+    <text x="300" y="112">1</text>
+    <text x="300" y="172">2</text>
+    <text x="300" y="232">3</text>
+    <text x="300" y="292">4</text>
+    <text x="452" y="112">8</text>
+    <text x="452" y="172">7</text>
+    <text x="452" y="232">6</text>
+    <text x="452" y="292">5</text>
+  </g>
+
+  <!-- left side: pins 1 to 4 -->
+  <g font-size="15">
+    <text x="250" y="105" text-anchor="end" font-weight="bold" fill="#1f5fbf">CS · GPIO5</text>
+    <text x="250" y="122" text-anchor="end" font-size="12" fill="#777">P4: GPIO45 · clip red wire</text>
+    <text x="250" y="165" text-anchor="end" font-weight="bold" fill="#1f5fbf">DO · GPIO8</text>
+    <text x="250" y="182" text-anchor="end" font-size="12" fill="#777">P4: GPIO47</text>
+    <text x="250" y="225" text-anchor="end" font-weight="bold" fill="#999">WP · not connected</text>
+    <text x="250" y="285" text-anchor="end" font-weight="bold" fill="#222">GND · GND</text>
+  </g>
+
+  <!-- right side: pins 8 to 5 -->
+  <g font-size="15">
+    <text x="510" y="105" font-weight="bold" fill="#c62828">VCC · GPIO3</text>
+    <text x="510" y="122" font-size="12" fill="#777">P4: GPIO32 · 3.3 V only</text>
+    <text x="510" y="165" font-weight="bold" fill="#1f5fbf">HOLD · GPIO44</text>
+    <text x="510" y="182" font-size="12" fill="#777">S2: GPIO40 · P4: GPIO53</text>
+    <text x="510" y="225" font-weight="bold" fill="#1f5fbf">CLK · GPIO7</text>
+    <text x="510" y="242" font-size="12" fill="#777">P4: GPIO46</text>
+    <text x="510" y="285" font-weight="bold" fill="#1f5fbf">DI · GPIO9</text>
+    <text x="510" y="302" font-size="12" fill="#777">P4: GPIO21 · also the boot pin</text>
+  </g>
+
+  <text x="380" y="356" text-anchor="middle" font-size="13" fill="#555">Pins count down the left from the dot, then up the right: 8 sits across from 1.</text>
+</svg>
