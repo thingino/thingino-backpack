@@ -98,8 +98,8 @@ images stream through it, so the default build runs without PSRAM.
   there; the S2 Mini has neither the bridge nor the pins. The camera's USB port is never a
   console.
 - The pins are set in `src/main.rs`, per chip. The status page draws them on the board,
-  for the DevKitC-1, S3 Super Mini, XIAO ESP32S3 and S2 Mini, and lists them for any
-  other. The flash programmer's clip has pins of its own, in [Flash chip](#flash-chip).
+  for the DevKitC-1 (and its CH343 copies, whose two USB ports are swapped), S3 Super
+  Mini, XIAO ESP32S3 and S2 Mini, and lists them for any other. The flash programmer's clip has pins of its own, in [Flash chip](#flash-chip).
 
 ## Flashing a release
 
