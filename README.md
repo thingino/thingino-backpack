@@ -7,7 +7,8 @@ nothing else attached:
 - **Flashing.** The thingino-dfu daemon (`dfu-remote`) runs on the unit, with the camera's
   USB port on the ESP32-S3's USB host. `thingino-dfu --host` and the web flasher's remote
   mode talk to it as they would to a Linux host: detect, bootstrap, read, write, verify.
-- **Serial console.** The camera's UART over TCP, raw and as RFC 2217.
+- **Serial consoles.** The camera's UART over TCP, raw and as RFC 2217, and up to two more
+  for the camera's other chips: a battery or motor MCU, a Wi-Fi chip.
 - **Power and boot pin.** The unit switches the camera's power and holds its boot pin, so it
   can put the camera into the bootrom on request and power-cycle one that stopped
   answering on USB.
@@ -16,6 +17,8 @@ nothing else attached:
 - **Findable like a camera.** A thingino-style Wi-Fi setup portal on first boot, then mDNS
   `_thingino._tcp` and a status page, which the
   [thingino app](https://github.com/thingino/thingino-app) lists and opens.
+- **Status page.** The camera's controls, a terminal on its consoles, the clip's and the
+  board's wiring, and every setting: see [Status page](#status-page).
 - **Part of a bench.** The [hardware-development-lab](https://github.com/gtxaspec/hardware-development-lab)
   relay panel finds units on its network and drives them next to its relay boards: see
   [On a bench panel](#on-a-bench-panel).
@@ -96,10 +99,16 @@ images stream through it, so the default build runs without PSRAM.
   (D6 and D7 on a XIAO), GPIO37 TX and GPIO38 RX on the P4. On the S3, GPIO44 is the flash's
   HOLD instead, and the log is output only. Boards with a USB-UART bridge bring it out
   there; the S2 Mini has neither the bridge nor the pins. The camera's USB port is never a
-  console.
+  console. The log goes quiet while UART0 serves a camera's chip: UART 3 on the S3, UART 2
+  on the S2 ([Extra UARTs](#extra-uarts)).
+- UART 2 and 3 take the flash clip's pins. On the S2 and S3, UART 2 has TX on GPIO5 and RX
+  on GPIO8 (the clip's CS and DO), UART 3 TX on GPIO7 and RX on GPIO3 (CLK and VCC); on the
+  P4, GPIO45 and 47, and GPIO46 and 32. Their TX, like UART 1's, only drives while the
+  camera has power.
 - The pins are set in `src/main.rs`, per chip. The status page draws them on the board,
-  for the DevKitC-1 (and its CH343 copies, whose two USB ports are swapped), S3 Super
-  Mini, XIAO ESP32S3 and S2 Mini, and lists them for any other. The flash programmer's clip has pins of its own, in [Flash chip](#flash-chip).
+  for the DevKitC-1 (and its CH343 copies, whose two USB ports are swapped), the S3 Super
+  Mini, the XIAO ESP32S3 and the S2 Mini, and lists them for any other. The flash
+  programmer's clip has pins of its own, in [Flash chip](#flash-chip).
 
 ## Flashing a release
 
@@ -147,7 +156,8 @@ Cargo fetches the daemon, the DFU core and the ESP-IDF USB host backend from
 ```
 
 The first build of each compiles ESP-IDF and takes a while; each builds in a target
-directory of its own.
+directory of its own. Release builds use link-time optimization, which makes linking take
+a few minutes and the app about a tenth smaller.
 
 `full.bin` is the other three in one image, the one a release calls
 `thingino-backpack-<chip>.bin`. Flash it once, with the chip and the directory that match:
@@ -184,14 +194,33 @@ and restarts into the setup portal. Erasing the NVS partition (`esptool.py erase
 
 | Port     | Service                                                                         |
 |----------|---------------------------------------------------------------------------------|
-| 80       | Status page, `/api/info`, `/api/camera`, `/api/flash`, `/api/wifi`, `/api/ota`  |
+| 80       | Status page, its API (`/api/...`) and its terminal's WebSocket                  |
 | 2217     | Camera console, RFC 2217                                                        |
 | 3000     | Camera console, raw                                                             |
+| 3001     | UART 2, raw, when it is on                                                      |
+| 3002     | UART 3, raw, when it is on                                                      |
 | 5050     | thingino-dfu daemon (`dfu-remote`)                                              |
 | 8888     | Flash programmer, flashrom's serprog (IPv4 only, for now)                       |
 | 5353/udp | mDNS: the hostname, and `_thingino._tcp` for the thingino app                   |
 
 `<host>` below is the hostname, as `<host>.local`, or an address.
+
+### Status page
+
+`http://<host>.local/` has five tabs:
+
+- **Camera**: power, boot pin, USB devices and who has the flash chip, the power and
+  bootrom buttons, and the dfu-remote and console commands, with copy buttons.
+- **Terminal**: the consoles in the browser ([Terminal](#terminal)).
+- **Flash chip**: the flashrom command, VCC and HOLD, and the clip's wiring.
+- **Wiring**: the board with the pins in use marked, for the DevKitC-1 and its CH343
+  copies, the S3 Super Mini, the XIAO ESP32S3 and the S2 Mini, and a table of them for any
+  board.
+- **Settings**: the UARTs, BOOTSEL and the USB port, the Wi-Fi link and TX power, and
+  firmware updates.
+
+The page is built into the firmware and gets everything about the unit from the API:
+`/api/info` has its name, chip, version, ports, addresses and pins.
 
 ### Flashing
 
@@ -209,9 +238,9 @@ flasher, choose remote mode and enter `<host>.local:5050`.
 
 ### Console
 
-One client at a time across both console ports; a new connection takes the console over,
-and the old client is told who took it. The camera's output while nobody is connected is
-dropped.
+One client at a time per UART, across its raw and RFC 2217 ports and the status page's
+terminal; a new connection takes the console over, and the old client is told who took
+it. Output while nobody is connected is dropped.
 
 ```sh
 socat -,rawer,escape=0x1d tcp:<host>.local:3000     # Ctrl-] leaves
@@ -232,7 +261,36 @@ ESP32's EN and IO0:
 Terminals assert both lines when they open, which leaves the camera alone. The lines act
 once they have been stable for 100 ms, so a client that sets them one at a time never
 pulses the boot pin, and whatever they asserted is undone when the client disconnects.
-The UART goes back to 115200 8N1 then too.
+The UART goes back to its own baud rate and 8N1 then too.
+
+#### Terminal
+
+The status page's Terminal tab is a console in the browser, over a WebSocket at
+`/api/console?uart=<0 to 2>`. It is a client like socat: opening it takes the UART over,
+and socat takes it back the same way. It shows colors and busybox's line editing, and sends
+every key, Ctrl and the arrow keys included; Ctrl-C over a selection copies it instead.
+Each UART keeps its own scrollback. Full-screen programs (vi, top) need a terminal on the
+TCP port.
+
+#### Extra UARTs
+
+A camera with more than one chip worth watching, a battery or motor MCU, a Wi-Fi chip, can
+have two more consoles: UART 2, raw on port 3001, and UART 3 on 3002. They take the flash
+clip's pins ([Wiring](#wiring)), so the flash programmer is off while either is on. On the
+S3, UART 3 is UART0, so the unit's own log goes quiet while it is on; a crash would still
+print there. The S2 has room for UART 2 alone, which is its UART0.
+
+Each UART has a name and a baud rate, both kept across restarts, and a new baud rate takes
+effect at once. Turning UART 2 or 3 on or off restarts the unit. On the Settings tab, or:
+
+```sh
+curl http://<host>.local/api/uarts
+curl -X POST 'http://<host>.local/api/uarts?uart=1&on=1'      # UART 2 on, and restart
+curl -X POST 'http://<host>.local/api/uarts?uart=1&name=Battery%20MCU'
+curl -X POST 'http://<host>.local/api/uarts?uart=1&baud=57600'
+```
+
+`uart` counts from 0, the camera SoC's, which is always on.
 
 ### Camera power and boot pin
 
@@ -285,7 +343,8 @@ up on USB.
 The unit speaks flashrom's serprog protocol on port 8888 and drives a SOIC-8 clip on the
 camera's flash chip, so flashrom 1.4.0 or later on any computer that reaches the unit reads
 and writes the chip over the network. The camera is either off, with the unit powering the
-chip, or parked in its bootrom on its own supply: see [VCC and HOLD](#vcc-and-hold).
+chip, or parked in its bootrom on its own supply: see [VCC and HOLD](#vcc-and-hold). It is
+off while UART 2 or 3 is on, as they take its pins ([Extra UARTs](#extra-uarts)).
 
 | ESP32-S3, -S2        | ESP32-P4             | Flash chip                                          |
 |----------------------|----------------------|-----------------------------------------------------|
@@ -426,7 +485,10 @@ s, or when three port power cycles in a row fail to get the camera enumerated, t
 power-cycles the camera. It backs off from 30 s to 10 min while that keeps happening, and
 leaves a camera alone while its power is meant to be off or a bootrom entry is running.
 
-### Wi-Fi TX power
+### Wi-Fi link and TX power
+
+The status page's header shows the signal of the network the unit is on, and its Settings
+tab the network's name and channel too.
 
 On the S2 and S3, the radio transmits at up to 20 dBm. The status page's Wi-Fi section
 turns that down, to anywhere from 2 dBm, for a supply that browns out when the radio
@@ -434,7 +496,7 @@ transmits or a flash clip whose reads come back wrong. The setting is kept acros
 and forgotten by Reset Wi-Fi, and the same is an HTTP API:
 
 ```sh
-curl http://<host>.local/api/wifi                       # {"tx_dbm":20,"brownout":false}
+curl http://<host>.local/api/wifi     # {"tx_dbm":20,"brownout":false,"rssi":-52,"ssid":"home","channel":6}
 curl -X POST 'http://<host>.local/api/wifi?tx_dbm=13'
 ```
 
