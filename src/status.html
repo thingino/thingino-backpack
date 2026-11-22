@@ -69,6 +69,7 @@ button:disabled { opacity: .5; cursor: default; }
 .cmd code { flex: 1; padding: .5rem .7rem; font: .85rem var(--mono); white-space: nowrap; overflow-x: auto; color: var(--ink-hi); }
 .cmd button { border: 0; border-left: 1px solid var(--line); border-radius: 0 8px 8px 0; background: transparent; color: var(--ink2); padding: 0 .75rem; font-size: .8rem; }
 .cmd button:hover { color: var(--accent); }
+.addrs { font: .85rem/1.7 var(--mono); color: var(--ink-hi); padding: .3rem 0 0 .9rem; overflow-wrap: anywhere; }
 details { margin-top: .8rem; border-top: 1px solid var(--line); padding-top: .4rem; }
 summary { cursor: pointer; color: var(--ink2); font-size: .88rem; padding: .3rem 0; }
 select { font: inherit; font-size: .9rem; padding: .4rem .6rem; border-radius: 8px; border: 1px solid var(--line); background: var(--s2); color: var(--ink-hi); }
@@ -130,7 +131,7 @@ table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width
   <h2>Flash the camera</h2>
   <p class="muted">The camera is flashed through this backpack's dfu-remote daemon, from a computer or the web flasher in remote mode.</p>
   <div id="dfu-cmds"></div>
-  <details><summary>Addresses</summary><div id="addrs"></div></details>
+  <details><summary>Addresses</summary><div class="addrs" id="addrs"></div></details>
 </section>
 
 <section class="card">
@@ -510,7 +511,7 @@ async function init() {
   $('meta').textContent = info.chip + ' · ' + info.version;
   const host = info.name + '.local';
   $('dfu-cmds').innerHTML = cmd('thingino-dfu --host ' + host + ':' + info.ports.dfu + ' -l');
-  $('addrs').innerHTML = info.endpoints.map(cmd).join('');
+  $('addrs').innerHTML = info.endpoints.map((a) => '<div>' + esc(a) + '</div>').join('');
   $('console-cmds').innerHTML = cmd('socat -,rawer,escape=0x1d tcp:' + host + ':' + info.ports.console);
   $('rfc-cmds').innerHTML = cmd('rfc2217://' + host + ':' + info.ports.rfc2217);
   if (info.pins.clip) {
