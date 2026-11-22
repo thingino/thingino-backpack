@@ -71,7 +71,8 @@ input[type=file]::file-selector-button { font: inherit; padding: .4rem .75rem; m
 .cmd code { flex: 1; padding: .5rem .7rem; font: .85rem var(--mono); white-space: nowrap; overflow-x: auto; color: var(--ink-hi); }
 .cmd button { border: 0; border-left: 1px solid var(--line); border-radius: 0 8px 8px 0; background: transparent; color: var(--ink2); padding: 0 .75rem; font-size: .8rem; }
 .cmd button:hover { color: var(--accent); }
-.addrs { font: .85rem/1.7 var(--mono); color: var(--ink-hi); padding: .3rem 0 0 .9rem; overflow-wrap: anywhere; }
+.addrs { font: .85rem/1.7 var(--mono); color: var(--ink-hi); padding: .3rem 0 0 .9rem; }
+.addrs div { white-space: nowrap; overflow: hidden; }
 details { margin-top: .8rem; border-top: 1px solid var(--line); padding-top: .4rem; }
 summary { cursor: pointer; color: var(--ink2); font-size: .88rem; padding: .3rem 0; }
 select { font: inherit; font-size: .9rem; padding: .4rem .6rem; border-radius: 8px; border: 1px solid var(--line); background: var(--s2); color: var(--ink-hi); }
@@ -243,6 +244,16 @@ document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-copy]');
   if (b) copy(b.dataset.copy).then(() => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1200); });
 });
+
+// Each address on one line: one too wide for the card shrinks until it fits, the rest keep
+// their size. Measured only while the list is open, as a closed one has no width.
+function fitAddrs() {
+  for (const d of $('addrs').children) {
+    d.style.fontSize = '';
+    const room = d.clientWidth, need = d.scrollWidth;
+    if (room && need > room) d.style.fontSize = (parseFloat(getComputedStyle(d).fontSize) * room / need * 0.98) + 'px';
+  }
+}
 
 /* ---------- pins and boards ---------- */
 
@@ -515,6 +526,8 @@ async function init() {
   const host = info.name + '.local';
   $('dfu-cmds').innerHTML = cmd('thingino-dfu --host ' + host + ':' + info.ports.dfu + ' -l');
   $('addrs').innerHTML = info.endpoints.map((a) => '<div>' + esc(a) + '</div>').join('');
+  $('addrs').closest('details').addEventListener('toggle', fitAddrs);
+  addEventListener('resize', fitAddrs);
   $('console-cmds').innerHTML = cmd('socat -,rawer,escape=0x1d tcp:' + host + ':' + info.ports.console);
   $('rfc-cmds').innerHTML = cmd('rfc2217://' + host + ':' + info.ports.rfc2217);
   if (info.pins.clip) {
