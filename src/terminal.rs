@@ -1,10 +1,11 @@
-//! The status page's terminal: the camera's console over a WebSocket at `/api/console`.
+//! The status page's terminal: a console over a WebSocket at `/api/console?uart=<0 to 2>`.
 //!
-//! Each session is an ordinary console client, a loopback connection to the raw console
+//! Each session is an ordinary console client, a loopback connection to that UART's raw
 //! port, so it takes the console over from socat and is taken over by it the same way. The
 //! camera's output goes to the page as binary frames, and what the page sends goes to the
 //! camera. When the console connection ends, the page gets a text frame saying why.
 
+use core::ffi::CStr;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpStream};
 use std::sync::{Mutex, PoisonError};
@@ -12,7 +13,7 @@ use std::thread;
 
 use esp_idf_svc::http::server::ws::EspHttpWsConnection;
 use esp_idf_svc::http::server::EspHttpServer;
-use esp_idf_svc::sys::EspError;
+use esp_idf_svc::sys::{self, EspError};
 use esp_idf_svc::ws::FrameType;
 use log::{info, warn};
 
@@ -35,8 +36,28 @@ pub fn register(server: &mut EspHttpServer<'static>) -> Result<(), EspError> {
     Ok(())
 }
 
+/// The UART the page asked for, in the handshake's query; the camera SoC's otherwise.
+fn requested(ws: &EspHttpWsConnection) -> usize {
+    let EspHttpWsConnection::New(_, req) = ws else {
+        return 0;
+    };
+    let mut buf = [0u8; 32];
+    // SAFETY: the request lives through the handshake, and the buffer is nul-terminated.
+    if unsafe { sys::httpd_req_get_url_query_str(*req, buf.as_mut_ptr().cast(), buf.len()) } != sys::ESP_OK {
+        return 0;
+    }
+    let query = CStr::from_bytes_until_nul(&buf).ok().and_then(|query| query.to_str().ok()).unwrap_or("");
+    crate::pairs(query)
+        .into_iter()
+        .find(|(key, _)| key == "uart")
+        .and_then(|(_, line)| line.parse().ok())
+        .filter(|&line| line < console::LINES)
+        .unwrap_or(0)
+}
+
 fn open(ws: &EspHttpWsConnection) -> Result<(), String> {
-    let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, console::PORT)).map_err(|err| format!("terminal: {err}"))?;
+    let port = console::PORT + requested(ws) as u16;
+    let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).map_err(|err| format!("terminal: port {port}: {err}"))?;
     let _ = stream.set_nodelay(true);
     let mut from_camera = stream.try_clone().map_err(|err| format!("terminal: {err}"))?;
     let mut sender = ws.create_detached_sender().map_err(|err| format!("terminal: {err}"))?;

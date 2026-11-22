@@ -107,6 +107,7 @@ fn run() -> Result<(), String> {
             }),
             set_tx_power: Box::new(move |power| wifi::set_tx_power(&store, power)),
             tx_power: wifi::tx_power,
+            link: wifi::link,
             browned_out: wifi::browned_out(),
         };
         (wifi::join(peripherals.modem, sysloop, nvs.clone(), saved)?, hostname, Some(settings))
@@ -151,11 +152,41 @@ fn run() -> Result<(), String> {
     let (vcc, hold) = (peripherals.pins.gpio32, peripherals.pins.gpio53);
     let host = UsbHost::install().map_err(|err| err.to_string())?;
     let camera = camera::start(power, boot, bootsel, host.clone(), nvs.clone())?;
-    console::start(peripherals.uart1, tx, rx, Arc::clone(&camera))?;
-    // The rest of the unit works without it.
-    if let Err(err) = serprog::start(cs, clk, miso, vcc, hold, Arc::clone(&camera), nvs) {
+    let uarts = console::settings(&nvs);
+    let mut lines = vec![console::line(0, peripherals.uart1, tx, rx, uarts.bauds[0])?];
+    if uarts.extras() {
+        // UART 2 takes the clip's CS and DO, UART 3 its CLK and VCC, so the flash programmer
+        // stays off. On the S3 UART 3 is UART0, and on the S2 UART 2 is: the log's.
+        #[cfg(esp32s3)]
+        {
+            if uarts.on[1] {
+                lines.push(console::line(1, peripherals.uart2, cs, miso, uarts.bauds[1])?);
+            }
+            if uarts.on[2] {
+                console::quiet_log();
+                lines.push(console::line(2, peripherals.uart0, clk, vcc, uarts.bauds[2])?);
+            }
+        }
+        #[cfg(esp32s2)]
+        {
+            console::quiet_log();
+            lines.push(console::line(1, peripherals.uart0, cs, miso, uarts.bauds[1])?);
+        }
+        #[cfg(esp32p4)]
+        {
+            if uarts.on[1] {
+                lines.push(console::line(1, peripherals.uart2, cs, miso, uarts.bauds[1])?);
+            }
+            if uarts.on[2] {
+                lines.push(console::line(2, peripherals.uart3, clk, vcc, uarts.bauds[2])?);
+            }
+        }
+        info!("flash programmer off: the extra UARTs have its pins");
+    } else if let Err(err) = serprog::start(cs, clk, miso, vcc, hold, Arc::clone(&camera), nvs) {
+        // The rest of the unit works without it.
         error!("{err}");
     }
+    console::start(lines, Arc::clone(&camera))?;
     // Findable as a camera is: the app's hub lists it and opens the page on port 80.
     let status = status::start(&hostname, camera, settings)?;
     memory_report("after the network and USB host");
@@ -258,8 +289,43 @@ fn stacks_report() {
     info!("stacks unused:{line}");
 }
 
+/// An `application/x-www-form-urlencoded` body or query string, decoded.
+pub(crate) fn pairs(text: &str) -> Vec<(String, String)> {
+    text.split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (decode(name), decode(value))
+        })
+        .collect()
+}
+
+fn decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let hex = |offset: usize| bytes.get(at + offset).and_then(|&byte| char::from(byte).to_digit(16));
+        match (bytes[at], hex(1), hex(2)) {
+            (b'%', Some(high), Some(low)) => {
+                out.push(u8::try_from(high * 16 + low).unwrap_or_default());
+                at += 3;
+            }
+            (b'+', _, _) => {
+                out.push(b' ');
+                at += 1;
+            }
+            (byte, _, _) => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Restarts in [`RESTART_AFTER`].
-fn restart_soon() {
+pub(crate) fn restart_soon() {
     let _ = std::thread::Builder::new()
         .name("restart".into())
         .stack_size(2048)

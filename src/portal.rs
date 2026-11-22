@@ -337,7 +337,7 @@ fn read_form(req: &mut Req<'_, '_>) -> Result<Vec<(String, String)>, EspIOError>
         }
         body.extend_from_slice(&buf[..got]);
     }
-    Ok(pairs(&String::from_utf8_lossy(&body)))
+    Ok(crate::pairs(&String::from_utf8_lossy(&body)))
 }
 
 /// Validates the form as the cameras' `save_config` does, and stores the network.
@@ -385,42 +385,7 @@ fn save(nvs: &EspDefaultNvsPartition, form: &[(String, String)]) -> Result<(), S
 
 fn query(uri: &str, key: &str) -> Option<String> {
     let (_, query) = uri.split_once('?')?;
-    pairs(query).into_iter().find(|(name, _)| name == key).map(|(_, value)| value)
-}
-
-/// An `application/x-www-form-urlencoded` body or query string, decoded.
-fn pairs(text: &str) -> Vec<(String, String)> {
-    text.split('&')
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-            (decode(name), decode(value))
-        })
-        .collect()
-}
-
-fn decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut at = 0;
-    while at < bytes.len() {
-        let hex = |offset: usize| bytes.get(at + offset).and_then(|&byte| char::from(byte).to_digit(16));
-        match (bytes[at], hex(1), hex(2)) {
-            (b'%', Some(high), Some(low)) => {
-                out.push(u8::try_from(high * 16 + low).unwrap_or_default());
-                at += 3;
-            }
-            (b'+', _, _) => {
-                out.push(b' ');
-                at += 1;
-            }
-            (byte, _, _) => {
-                out.push(byte);
-                at += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    crate::pairs(query).into_iter().find(|(name, _)| name == key).map(|(_, value)| value)
 }
 
 /// Answers every name with the portal's address, as the cameras' wildcard dnsd does, so a

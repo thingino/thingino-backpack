@@ -134,7 +134,7 @@ footer .v { color: var(--ink2); }
   <svg class="mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 0a.5.5 0 0 1 .5.5V2h1V.5a.5.5 0 0 1 1 0V2h1V.5a.5.5 0 0 1 1 0V2h1V.5a.5.5 0 0 1 1 0V2A2.5 2.5 0 0 1 14 4.5h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14a2.5 2.5 0 0 1-2.5 2.5v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14A2.5 2.5 0 0 1 2 11.5H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2A2.5 2.5 0 0 1 4.5 2V.5A.5.5 0 0 1 5 0m-.5 3A1.5 1.5 0 0 0 3 4.5v7A1.5 1.5 0 0 0 4.5 13h7a1.5 1.5 0 0 0 1.5-1.5v-7A1.5 1.5 0 0 0 11.5 3zM5 6.5A1.5 1.5 0 0 1 6.5 5h3A1.5 1.5 0 0 1 11 6.5v3A1.5 1.5 0 0 1 9.5 11h-3A1.5 1.5 0 0 1 5 9.5zM6.5 6a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 0-.5-.5z"/></svg>
   <span class="brand">thingino backpack</span>
   <span><span class="unit" id="name">&nbsp;</span> <span class="meta" id="meta"></span></span>
-  <span class="pill"><span class="dot" id="dot"></span><span id="online">connecting</span></span>
+  <span class="pill"><span class="dot" id="dot"></span><span id="online">connecting</span><span id="signal" hidden></span></span>
 </div></header>
 
 <main>
@@ -257,7 +257,12 @@ footer .v { color: var(--ink2); }
 <section class="card" id="wifi-card" hidden>
   <div class="card-h"><svg viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r=".8"/></svg><h2>Wi-Fi</h2></div>
   <div class="card-b">
-  <div class="setting" style="border-top:0;padding-top:0">
+  <div class="stats">
+    <div class="stat"><div class="k">Signal</div><div class="v" id="wifi-rssi">…</div></div>
+    <div class="stat"><div class="k">Channel</div><div class="v" id="wifi-channel">…</div></div>
+    <div class="stat" style="grid-column:1/-1"><div class="k">Network</div><div class="v" id="wifi-ssid">…</div></div>
+  </div>
+  <div class="setting">
     <span class="name">TX power</span>
     <span class="row"><select id="tx-power"></select><button id="tx-set">Apply</button></span>
     <span class="help" id="tx-help">The most the radio transmits at.</span>
@@ -667,6 +672,22 @@ async function loadFirmware() {
   if (o.state === 'on probation') setTimeout(loadFirmware, 3000);
 }
 
+// A word for a signal strength, as a phone's bars would put it.
+function signalWord(rssi) {
+  return rssi >= -55 ? 'excellent' : rssi >= -67 ? 'good' : rssi >= -75 ? 'fair' : 'weak';
+}
+
+async function pollWifi() {
+  const w = await call('/api/wifi');
+  if (w.ok === false || w.rssi === undefined) return;
+  const joined = w.rssi !== null;
+  $('wifi-rssi').textContent = joined ? w.rssi + ' dBm, ' + signalWord(w.rssi) : 'not joined';
+  $('wifi-ssid').textContent = joined ? w.ssid : '–';
+  $('wifi-channel').textContent = joined ? w.channel : '–';
+  $('signal').hidden = !joined;
+  if (joined) $('signal').textContent = '· ' + w.rssi + ' dBm';
+}
+
 async function loadWifi() {
   const w = await call('/api/wifi');
   if (w.ok === false) return;
@@ -674,6 +695,8 @@ async function loadWifi() {
   sel.innerHTML = '';
   for (let d = 20; d >= 2; d--) sel.add(new Option(d + ' dBm' + (d === 20 ? ', full' : ''), d));
   if (w.tx_dbm !== null) sel.value = String(Math.round(w.tx_dbm));
+  pollWifi();
+  setInterval(pollWifi, 5000);
   if (w.brownout) $('tx-help').textContent = 'The most the radio transmits at. The last reset was a brownout, so it is capped at 13 dBm until the next clean boot.';
 }
 

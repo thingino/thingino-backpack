@@ -131,6 +131,19 @@ pub fn tx_power() -> Option<i8> {
     (unsafe { sys::esp_wifi_get_max_tx_power(&raw mut power) } == 0).then_some(power)
 }
 
+/// The network joined: its received signal strength in dBm, its SSID and its channel;
+/// `None` while not joined.
+pub fn link() -> Option<(i8, String, u8)> {
+    // SAFETY: all-zero is a valid record, which the call fills in.
+    let mut ap: sys::wifi_ap_record_t = unsafe { core::mem::zeroed() };
+    // SAFETY: `ap` outlives the call.
+    if unsafe { sys::esp_wifi_sta_get_ap_info(&raw mut ap) } != sys::ESP_OK {
+        return None;
+    }
+    let ssid = core::ffi::CStr::from_bytes_until_nul(&ap.ssid).map_or_else(|_| String::new(), |ssid| ssid.to_string_lossy().into_owned());
+    Some((ap.rssi, ssid, ap.primary))
+}
+
 /// This boot followed a brownout: the PHY came up at 13 dBm, and the cap stays there until
 /// a reset for any other reason.
 pub fn browned_out() -> bool {

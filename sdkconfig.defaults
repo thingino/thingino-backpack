@@ -28,9 +28,9 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # IPv6 first: SLAAC on top of the link-local address, and room for tokio's sockets and
 # the status page's terminal, which holds a WebSocket and both ends of a loopback
-# connection to the console.
+# connection to a console, and the extra UARTs' ports.
 CONFIG_LWIP_IPV6_AUTOCONFIG=y
-CONFIG_LWIP_MAX_SOCKETS=20
+CONFIG_LWIP_MAX_SOCKETS=24
 
 # The status page's terminal.
 CONFIG_HTTPD_WS_SUPPORT=y

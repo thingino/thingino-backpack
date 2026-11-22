@@ -7,6 +7,9 @@
 //!
 //! * `GET /api/info`: the unit's name, chip, firmware version, ports, addresses and the
 //!   GPIOs in use, as JSON.
+//! * `GET /api/uarts`: each UART's on, name, baud rate, pins and TCP port, as JSON.
+//! * `POST /api/uarts?uart=<0 to 2>&on=0|1`, `&name=<name>` or `&baud=<rate>`: turns UART 2 or 3
+//!   on or off (a restart), names a UART, or sets its baud rate, now and on every boot after.
 //! * `GET /api/camera`: power, boot pin, USB devices enumerated and their VID:PID, how
 //!   long a USB transfer has gone unanswered, power cycles done for recovery, and BOOTSEL's
 //!   sense, as JSON.
@@ -19,8 +22,9 @@
 //! * `GET /api/flash`: whether the flash programmer drives the chip's VCC and HOLD, as JSON.
 //! * `POST /api/flash?vcc=driven|alone&hold=driven|alone`, either or both: what it drives
 //!   from the next flashrom session on, and on every boot after. Same answers.
-//! * `GET /api/wifi`, on the Wi-Fi builds: the radio's TX power cap in dBm, and whether this
-//!   boot followed a brownout, which holds it at 13 dBm until the next reset, as JSON.
+//! * `GET /api/wifi`, on the Wi-Fi builds: the radio's TX power cap in dBm, whether this boot
+//!   followed a brownout, which holds it at 13 dBm until the next reset, and the network's
+//!   signal strength, SSID and channel, as JSON.
 //! * `POST /api/wifi?tx_dbm=<dBm>`, on the Wi-Fi builds: caps the TX power, 2 to 20 dBm, now
 //!   and on every boot after. Same answers as the camera's.
 //! * `POST /api/wifi-reset`, on the Wi-Fi builds: forgets the network, the hostname and the
@@ -56,6 +60,8 @@ pub struct Wifi {
     pub tx_power: fn() -> Option<i8>,
     /// This boot followed a brownout, which holds the radio at 13 dBm until the next reset.
     pub browned_out: bool,
+    /// The network joined: signal strength in dBm, SSID and channel.
+    pub link: fn() -> Option<(i8, String, u8)>,
 }
 
 /// The announcement and the page; dropping it ends both.
@@ -72,11 +78,13 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
         .map_err(|err| format!("mDNS: {err}"))?;
 
     // lwIP's socket budget is shared with the daemon and mDNS, and one browser at a time
-    // is all a status page sees, one of its sockets held by the terminal while it is open. The handlers format onto the heap; a firmware update's
+    // is all a status page sees; but a browser opens several connections at once, and the
+    // server closes the least recently used one when it runs out, which would be a quiet
+    // terminal's. The handlers format onto the heap; a firmware update's
     // write and verify, the deepest path, left 0.7 KB of 4 KB unused, so 5 KB rather than
     // esp-idf-svc's 6 KB.
     let mut server = EspHttpServer::new(&Configuration {
-        max_open_sockets: 4,
+        max_open_sockets: 7,
         stack_size: 5120,
         ..Default::default()
     })
@@ -109,6 +117,7 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
         set_tx_power,
         tx_power,
         browned_out,
+        link,
     }) = wifi
     {
         server
@@ -119,7 +128,11 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
         server
             .fn_handler("/api/wifi", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
                 let power = tx_power().map_or_else(|| "null".to_owned(), |power| (f32::from(power) / 4.0).to_string());
-                json(req, &format!(r#"{{"tx_dbm":{power},"brownout":{browned_out}}}"#))
+                let link = link().map_or_else(
+                    || r#""rssi":null,"ssid":null,"channel":null"#.to_owned(),
+                    |(rssi, ssid, channel)| format!(r#""rssi":{rssi},"ssid":"{}","channel":{channel}"#, json_escape(&ssid)),
+                );
+                json(req, &format!(r#"{{"tx_dbm":{power},"brownout":{browned_out},{link}}}"#))
             })
             .map_err(|err| format!("status page: {err}"))?;
         server
@@ -196,6 +209,34 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
                     .write_all(body.as_bytes());
             };
             json(req, &answer(camera.request(action)))
+        })
+        .map_err(|err| format!("status page: {err}"))?;
+    server
+        .fn_handler("/api/uarts", Method::Get, |req: Request<&mut EspHttpConnection<'_>>| {
+            json(req, &console::json())
+        })
+        .map_err(|err| format!("status page: {err}"))?;
+    server
+        .fn_handler("/api/uarts", Method::Post, |req: Request<&mut EspHttpConnection<'_>>| {
+            let query = req.uri().split_once('?').map_or("", |(_, query)| query);
+            let fields = crate::pairs(query);
+            let field = |name: &str| fields.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
+            let line = field("uart").and_then(|line| line.parse::<usize>().ok());
+            let result = match (line, field("on"), field("name"), field("baud")) {
+                (Some(line), Some(on), _, _) => console::set_on(line, on == "1"),
+                (Some(line), None, Some(name), _) => console::set_name(line, name),
+                (Some(line), None, None, Some(baud)) => match baud.parse() {
+                    Ok(baud) => console::set_baud(line, baud),
+                    Err(_) => Err("baud must be a number".into()),
+                },
+                _ => Err("give uart=<0 to 2> and on=0|1, name=<name> or baud=<rate>".into()),
+            };
+            match result {
+                Ok(message) => json(req, &answer(Ok(message))),
+                Err(error) => req
+                    .into_response(400, None, &[("Content-Type", "application/json")])?
+                    .write_all(answer(Err(error)).as_bytes()),
+            }
         })
         .map_err(|err| format!("status page: {err}"))?;
     server
@@ -360,5 +401,14 @@ fn json(req: Request<&mut EspHttpConnection<'_>>, body: &str) -> Result<(), EspI
 }
 
 fn json_escape(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
 }
