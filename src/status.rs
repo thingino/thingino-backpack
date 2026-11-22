@@ -72,11 +72,11 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
         .map_err(|err| format!("mDNS: {err}"))?;
 
     // lwIP's socket budget is shared with the daemon and mDNS, and one browser at a time
-    // is all a status page sees. The handlers format onto the heap; a firmware update's
+    // is all a status page sees, one of its sockets held by the terminal while it is open. The handlers format onto the heap; a firmware update's
     // write and verify, the deepest path, left 0.7 KB of 4 KB unused, so 5 KB rather than
     // esp-idf-svc's 6 KB.
     let mut server = EspHttpServer::new(&Configuration {
-        max_open_sockets: 3,
+        max_open_sockets: 4,
         stack_size: 5120,
         ..Default::default()
     })
@@ -98,6 +98,7 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
             })
             .map_err(|err| format!("status page: {err}"))?;
     }
+    crate::terminal::register(&mut server).map_err(|err| format!("status page: {err}"))?;
     server
         .fn_handler("/api/info", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
             json(req, &info_json(&name, pins, has_wifi))

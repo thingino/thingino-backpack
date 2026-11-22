@@ -90,6 +90,11 @@ table.pins td:first-child { font-family: var(--mono); white-space: nowrap; width
 .sw { display: inline-block; width: .65rem; height: .65rem; border-radius: 3px; margin-right: .4rem; }
 .progress { height: 6px; background: var(--bg); border-radius: 99px; overflow: hidden; margin-top: .6rem; display: none; }
 .progress div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.term { margin: 0; height: 26rem; overflow-y: auto; background: var(--track); border: 1px solid var(--line); border-radius: 6px; padding: .5rem .65rem; font: 13px/1.4 var(--mono); color: var(--ink); white-space: pre; outline: none; cursor: text; }
+.term:focus { border-color: var(--accent); }
+.term div { min-height: 1.4em; }
+.term .note { color: var(--ink3); }
+.card-h .end button { padding: .2rem .65rem; font-size: .8rem; }
 footer { text-align: center; color: var(--ink3); font-size: .875rem; padding: 0 1rem 1.5rem; }
 footer .v { color: var(--ink2); }
 #toasts { position: fixed; right: 1rem; bottom: 1rem; display: grid; gap: .5rem; z-index: 10; max-width: min(420px, calc(100vw - 2rem)); }
@@ -207,6 +212,14 @@ footer .v { color: var(--ink2); }
 </div>
 
 </div>
+
+<section class="card" id="term-card" style="margin-bottom:1rem">
+  <div class="card-h"><svg viewBox="0 0 24 24"><path d="M4 17l6-5-6-5M12 19h8"/></svg><h2>Terminal</h2><span class="end"><span class="badge" id="term-badge">closed</span><button id="term-clear">Clear</button><button class="primary" id="term-open">Connect</button></span></div>
+  <div class="card-b">
+  <pre class="term" id="term" tabindex="0"></pre>
+  <p class="muted">The camera's console, the one on port 3000: connecting takes it over from socat, and socat takes it back the same way. Click the terminal to type; Ctrl-C over a selection copies it.</p>
+  </div>
+</section>
 
 <section class="card">
   <div class="card-h"><svg viewBox="0 0 24 24"><path d="M9 3v4M15 3v4M7 7h10v5a5 5 0 0 1-10 0zM12 17v4"/></svg><h2>Wiring</h2><span class="end"><select id="board" aria-label="Board"></select></span></div>
@@ -631,6 +644,166 @@ $('fw-send').onclick = () => {
   x.onerror = () => { toast('The upload failed.', true); $('fw-send').disabled = false; };
   x.send(file);
 };
+
+/* ---------- terminal ---------- */
+
+// A small terminal for a camera's shell: SGR colors, CR, BS, tabs, erase line and screen,
+// cursor left and right, and the cursor position query busybox asks the width with. No
+// cursor rows: full-screen programs (vi, top) need a real terminal on port 3000.
+const PALETTE = ['#484f58', '#ff7b72', '#3fb950', '#d29922', '#58a6ff', '#bc8cff', '#39c5cf', '#b1bac4',
+  '#6e7681', '#ffa198', '#56d364', '#e3b341', '#79c0ff', '#d2a8ff', '#56d4dd', '#f0f6fc'];
+const KEYS = { Enter: '\r', Backspace: '\x7f', Tab: '\t', Escape: '\x1b', ArrowUp: '\x1b[A', ArrowDown: '\x1b[B',
+  ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D', Home: '\x1b[H', End: '\x1b[F', Delete: '\x1b[3~', PageUp: '\x1b[5~', PageDown: '\x1b[6~' };
+const T = { ws: null, el: $('term'), line: null, cells: [], x: 0, cols: 80, fg: null, bg: null, bold: false, style: '', esc: null, homed: false, dec: null };
+
+function termCols() {
+  const probe = document.createElement('span');
+  probe.textContent = 'MMMMMMMMMM';
+  T.el.append(probe);
+  const cw = probe.getBoundingClientRect().width / 10;
+  probe.remove();
+  const room = T.el.clientWidth - 22;
+  T.cols = cw > 0 ? Math.max(20, Math.floor(room / cw)) : 80;
+}
+function termLine() {
+  T.line = document.createElement('div');
+  T.el.append(T.line);
+  T.cells = []; T.x = 0;
+  while (T.el.childElementCount > 2000) T.el.firstElementChild.remove();
+}
+function termRender() {
+  let h = '', run = '', rs = null;
+  const flush = () => { if (run) h += rs ? '<span style="' + rs + '">' + esc(run) + '</span>' : esc(run); run = ''; };
+  for (let i = 0; i < T.cells.length; i++) {
+    const cell = T.cells[i] || { c: ' ', s: '' };
+    if (cell.s !== rs) { flush(); rs = cell.s; }
+    run += cell.c;
+  }
+  flush();
+  T.line.innerHTML = h;
+}
+function termPut(ch) {
+  if (T.x >= T.cols) { termRender(); termLine(); }
+  T.cells[T.x++] = { c: ch, s: T.style };
+}
+function termSgr(n) {
+  for (let i = 0; i < n.length; i++) {
+    const v = n[i];
+    if (v === 0) { T.fg = T.bg = null; T.bold = false; }
+    else if (v === 1) T.bold = true;
+    else if (v === 22) T.bold = false;
+    else if (v >= 30 && v <= 37) T.fg = v - 30;
+    else if (v === 39) T.fg = null;
+    else if (v >= 40 && v <= 47) T.bg = v - 40;
+    else if (v === 49) T.bg = null;
+    else if (v >= 90 && v <= 97) T.fg = v - 82;
+    else if (v >= 100 && v <= 107) T.bg = v - 92;
+    else if ((v === 38 || v === 48) && n[i + 1] === 5) { if (n[i + 2] < 16) { if (v === 38) T.fg = n[i + 2]; else T.bg = n[i + 2]; } i += 2; }
+    else if ((v === 38 || v === 48) && n[i + 1] === 2) i += 4;
+  }
+  T.style = (T.fg !== null ? 'color:' + PALETTE[T.fg] + ';' : '') + (T.bg !== null ? 'background:' + PALETTE[T.bg] + ';' : '')
+    + (T.bold ? 'font-weight:700;' : '');
+}
+function termCsi(params, f) {
+  const n = params.replace(/[?>]/g, '').split(';').map((v) => parseInt(v, 10) || 0);
+  const homing = f === 'H' && n.length <= 2 && (n[0] || 1) === 1 && (n[1] || 1) === 1;
+  if (f === 'm') termSgr(n);
+  else if (f === 'K') {
+    if (n[0] === 1) for (let i = 0; i <= T.x; i++) T.cells[i] = undefined;
+    else if (n[0] === 2) T.cells = [];
+    else T.cells.length = Math.min(T.cells.length, T.x);
+  } else if (f === 'J') {
+    if (n[0] >= 2 || T.homed) { T.el.textContent = ''; termLine(); }
+    else T.cells.length = Math.min(T.cells.length, T.x);
+  } else if (f === 'C') T.x = Math.min(T.cols - 1, T.x + (n[0] || 1));
+  else if (f === 'D') T.x = Math.max(0, T.x - (n[0] || 1));
+  else if (f === 'G') T.x = Math.min(T.cols - 1, Math.max(0, (n[0] || 1) - 1));
+  else if (f === 'H') T.x = Math.min(T.cols - 1, Math.max(0, (n[1] || 1) - 1));
+  else if (f === 'n' && n[0] === 6) termSend('\x1b[24;' + (T.x + 1) + 'R');
+  T.homed = homing;
+}
+function termFeed(text) {
+  const el = T.el;
+  const follow = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
+  for (const ch of text) {
+    if (T.esc !== null) {
+      if (T.esc === '') {
+        if (ch === '[' || ch === ']' || ch === '(' || ch === ')' || ch === '#') T.esc = ch; else T.esc = null;
+      } else if (T.esc[0] === '[') {
+        const c = ch.charCodeAt(0);
+        if (c >= 0x40 && c <= 0x7e) { termCsi(T.esc.slice(1), ch); T.esc = null; } else T.esc += ch;
+      } else if (T.esc[0] === ']') {
+        if (ch === '\x07' || ch === '\\') T.esc = null; else if (T.esc.length < 256) T.esc += ch;
+      } else T.esc = null;
+      continue;
+    }
+    if (ch === '\x1b') T.esc = '';
+    else if (ch === '\r') T.x = 0;
+    else if (ch === '\n') { termRender(); termLine(); }
+    else if (ch === '\b') { if (T.x > 0) T.x--; }
+    else if (ch === '\t') { do termPut(' '); while (T.x % 8 && T.x < T.cols); }
+    else if (ch >= ' ') termPut(ch);
+  }
+  termRender();
+  if (follow) el.scrollTop = el.scrollHeight;
+}
+function termNote(text) {
+  termRender();
+  if (T.cells.length) termLine();
+  T.line.className = 'note';
+  T.line.textContent = '[' + text + ']';
+  termLine();
+  T.el.scrollTop = T.el.scrollHeight;
+}
+function termSend(text) {
+  if (T.ws && T.ws.readyState === 1) T.ws.send(new TextEncoder().encode(text));
+}
+function termState(open) {
+  $('term-badge').textContent = open ? 'connected' : 'closed';
+  $('term-badge').className = 'badge ' + (open ? 'good' : '');
+  $('term-open').textContent = open ? 'Disconnect' : 'Connect';
+  $('term-open').className = open ? '' : 'primary';
+}
+function termOpen() {
+  termCols();
+  const host = info.console_host || location.host;
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/api/console');
+  ws.binaryType = 'arraybuffer';
+  T.dec = new TextDecoder();
+  T.ws = ws;
+  ws.onopen = () => { termState(true); termNote('connected to the camera console'); T.el.focus(); };
+  ws.onmessage = (e) => {
+    if (typeof e.data === 'string') { termNote(e.data); ws.close(); } else termFeed(T.dec.decode(e.data, { stream: true }));
+  };
+  ws.onclose = () => { if (T.ws === ws) { T.ws = null; termState(false); termNote('disconnected'); } };
+  ws.onerror = () => toast('The terminal could not connect.', true);
+}
+if (!T.line) termLine();
+$('term-open').onclick = () => {
+  if (T.ws) { const ws = T.ws; T.ws = null; ws.close(); termState(false); termNote('disconnected'); } else termOpen();
+};
+$('term-clear').onclick = () => { T.el.textContent = ''; termLine(); T.el.focus(); };
+addEventListener('resize', termCols);
+T.el.addEventListener('keydown', (e) => {
+  if (!T.ws || e.metaKey) return;
+  const k = e.key;
+  let s;
+  if (e.ctrlKey && !e.altKey && k.length === 1) {
+    // Ctrl-C over a selection copies it, as a terminal app does.
+    if ((k === 'c' || k === 'C') && String(getSelection())) return;
+    const c = k.toUpperCase().charCodeAt(0);
+    if (c >= 64 && c <= 95) s = String.fromCharCode(c - 64); else if (k === ' ') s = '\0';
+  } else if (k.length === 1) s = (e.altKey ? '\x1b' : '') + k;
+  else s = KEYS[k];
+  if (s === undefined) return;
+  e.preventDefault();
+  termSend(s);
+});
+T.el.addEventListener('paste', (e) => {
+  if (!T.ws) return;
+  e.preventDefault();
+  termSend(e.clipboardData.getData('text').replace(/\r?\n/g, '\r'));
+});
 
 init();
 </script>

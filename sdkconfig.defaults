@@ -26,9 +26,14 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # build that leaves PSRAM alone runs on every ESP32-S3 module whatever PSRAM it has.
 # `./image.sh psram` layers sdkconfig.psram on top for octal-PSRAM modules.
 
-# IPv6 first: SLAAC on top of the link-local address, and room for tokio's sockets.
+# IPv6 first: SLAAC on top of the link-local address, and room for tokio's sockets and
+# the status page's terminal, which holds a WebSocket and both ends of a loopback
+# connection to the console.
 CONFIG_LWIP_IPV6_AUTOCONFIG=y
-CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_MAX_SOCKETS=20
+
+# The status page's terminal.
+CONFIG_HTTPD_WS_SUPPORT=y
 
 # Wi-Fi transmits at ESP-IDF's maximum, 20 dBm. Boards on marginal USB power brown out at
 # Wi-Fi PHY calibration, the radio's largest current spike: after a brownout reset the PHY
