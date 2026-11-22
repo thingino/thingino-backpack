@@ -26,10 +26,7 @@ a:hover { color: var(--ink-hi); }
 code { font: .9em var(--mono); color: var(--accent); }
 header { border-bottom: 1px solid var(--line); }
 .bar { max-width: 1180px; margin: 0 auto; padding: .75rem 1rem; display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
-.mark { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 5px; background: var(--s2); }
-.mark i { width: 6px; height: 14px; border-radius: 1px; background: var(--ink3); }
-.mark i:first-child { width: 9px; background: var(--accent); }
-.mark i:nth-child(2) { background: var(--accent); opacity: .55; }
+.mark { width: 22px; height: 22px; fill: var(--accent); flex: none; }
 .brand { color: var(--accent); font-weight: 600; font-size: 1.15rem; }
 .unit { color: var(--ink-hi); font-weight: 600; }
 .meta { color: var(--ink2); font-size: .85rem; }
@@ -103,7 +100,8 @@ footer .v { color: var(--ink2); }
 </head>
 <body>
 <header><div class="bar">
-  <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+  <!-- Bootstrap Icons' cpu (MIT), the chip the other thingino apps put before their name. -->
+  <svg class="mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 0a.5.5 0 0 1 .5.5V2h1V.5a.5.5 0 0 1 1 0V2h1V.5a.5.5 0 0 1 1 0V2h1V.5a.5.5 0 0 1 1 0V2A2.5 2.5 0 0 1 14 4.5h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14a2.5 2.5 0 0 1-2.5 2.5v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14A2.5 2.5 0 0 1 2 11.5H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2A2.5 2.5 0 0 1 4.5 2V.5A.5.5 0 0 1 5 0m-.5 3A1.5 1.5 0 0 0 3 4.5v7A1.5 1.5 0 0 0 4.5 13h7a1.5 1.5 0 0 0 1.5-1.5v-7A1.5 1.5 0 0 0 11.5 3zM5 6.5A1.5 1.5 0 0 1 6.5 5h3A1.5 1.5 0 0 1 11 6.5v3A1.5 1.5 0 0 1 9.5 11h-3A1.5 1.5 0 0 1 5 9.5zM6.5 6a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 0-.5-.5z"/></svg>
   <span class="brand">thingino backpack</span>
   <span><span class="unit" id="name">&nbsp;</span> <span class="meta" id="meta"></span></span>
   <span class="pill"><span class="dot" id="dot"></span><span id="online">connecting</span></span>
