@@ -9,6 +9,8 @@
 //!   GPIOs in use, as JSON.
 //! * `POST /api/spi`: serprog commands for the flash programmer, from a browser (see
 //!   [`crate::spi_http`]).
+//! * `POST /api/board?board=<name>`: the board the Wiring tab draws, kept on the unit;
+//!   `/api/info` has it, or a guess from the chip until one is set.
 //! * `GET /api/uarts`: each UART's on, name, baud rate, pins and TCP port, as JSON.
 //! * `POST /api/uarts?uart=<0 to 2>&on=0|1`, `&name=<name>` or `&baud=<rate>`: turns UART 2 or 3
 //!   on or off (a restart), names a UART, or sets its baud rate, now and on every boot after.
@@ -43,6 +45,7 @@ use esp_idf_svc::http::server::{Configuration, EspHttpConnection, EspHttpServer,
 use esp_idf_svc::http::Method;
 use esp_idf_svc::io::{EspIOError, Write};
 use esp_idf_svc::mdns::EspMdns;
+use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 use esp_idf_svc::sys;
 use tdfu_daemon::DEFAULT_PORT;
 
@@ -72,7 +75,8 @@ pub struct Status {
     _server: EspHttpServer<'static>,
 }
 
-pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<Status, String> {
+pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>, nvs: EspDefaultNvsPartition) -> Result<Status, String> {
+    let _ = NVS.set(nvs);
     let mut mdns = EspMdns::take().map_err(|err| format!("mDNS: {err}"))?;
     mdns.set_hostname(hostname).map_err(|err| format!("mDNS: {err}"))?;
     mdns.set_instance_name(hostname).map_err(|err| format!("mDNS: {err}"))?;
@@ -110,6 +114,18 @@ pub fn start(hostname: &str, camera: Arc<Camera>, wifi: Option<Wifi>) -> Result<
     }
     crate::terminal::register(&mut server).map_err(|err| format!("status page: {err}"))?;
     crate::spi_http::register(&mut server).map_err(|err| format!("status page: {err}"))?;
+    server
+        .fn_handler("/api/board", Method::Post, |req: Request<&mut EspHttpConnection<'_>>| {
+            let query = req.uri().split_once('?').map_or("", |(_, query)| query);
+            let board = crate::pairs(query).into_iter().find(|(key, _)| key == "board").map(|(_, board)| board);
+            match board.ok_or_else(|| "give board=<name>".to_owned()).and_then(|board| set_board(&board)) {
+                Ok(message) => json(req, &answer(Ok(message))),
+                Err(error) => req
+                    .into_response(400, None, &[("Content-Type", "application/json")])?
+                    .write_all(answer(Err(error)).as_bytes()),
+            }
+        })
+        .map_err(|err| format!("status page: {err}"))?;
     server
         .fn_handler("/api/info", Method::Get, move |req: Request<&mut EspHttpConnection<'_>>| {
             json(req, &info_json(&name, pins, has_wifi))
@@ -338,9 +354,10 @@ fn info_json(hostname: &str, camera: (i32, i32, i32), wifi: bool) -> String {
         },
     );
     format!(
-        r#"{{"name":"{}","chip":"{}","version":"{}","reset":"{}","panic":{},"wifi":{wifi},"ports":{{"dfu":{DEFAULT_PORT},"console":{},"rfc2217":{},"serprog":{}}},"endpoints":[{endpoints}],"pins":{{"power":{},"boot":{},"bootsel":{},"tx":{tx},"rx":{rx},{USB_PINS},"clip":{clip}}}}}"#,
+        r#"{{"name":"{}","chip":"{}","board":"{}","version":"{}","reset":"{}","panic":{},"wifi":{wifi},"ports":{{"dfu":{DEFAULT_PORT},"console":{},"rfc2217":{},"serprog":{}}},"endpoints":[{endpoints}],"pins":{{"power":{},"boot":{},"bootsel":{},"tx":{tx},"rx":{rx},{USB_PINS},"clip":{clip}}}}}"#,
         json_escape(hostname),
         json_escape(&chip()),
+        json_escape(&board()),
         json_escape(&build_id()),
         reset_reason(),
         crate::last_panic().map_or_else(|| "null".to_owned(), |text| format!(r#""{}""#, json_escape(&text))),
@@ -351,6 +368,53 @@ fn info_json(hostname: &str, camera: (i32, i32, i32), wifi: bool) -> String {
         camera.1,
         camera.2,
     )
+}
+
+/// Where the board setting is kept.
+const NAMESPACE: &str = "status";
+const BOARD: &str = "board";
+static NVS: std::sync::OnceLock<EspDefaultNvsPartition> = std::sync::OnceLock::new();
+
+/// The board the Wiring tab draws: the one set on this unit, or else a guess from the chip.
+fn board() -> String {
+    let mut buf = [0_u8; 32];
+    NVS.get()
+        .and_then(|nvs| EspNvs::new(nvs.clone(), NAMESPACE, true).ok())
+        .and_then(|store| store.get_str(BOARD, &mut buf).ok().flatten().map(str::to_owned))
+        .unwrap_or_else(|| guessed_board().to_owned())
+}
+
+/// The page's name for one of its board drawings; it falls back to a table for one it
+/// does not know.
+fn set_board(board: &str) -> Result<String, String> {
+    if board.is_empty() || board.len() > 24 || !board.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return Err("a board is 1 to 24 letters, digits, - or _".into());
+    }
+    let nvs = NVS.get().ok_or("no NVS")?;
+    let store = EspNvs::new(nvs.clone(), NAMESPACE, true).map_err(|err| format!("opening NVS: {err}"))?;
+    store.set_str(BOARD, board).map_err(|err| err.to_string())?;
+    Ok(format!("board set to {board}"))
+}
+
+/// An S3 with its flash inside the package (the S3 Super Mini's ESP32-S3FH4R2) is a Super
+/// Mini; one with it outside (a module, as on the DevKitC-1, or a XIAO) is a DevKitC-1.
+#[cfg(esp32s3)]
+fn guessed_board() -> &'static str {
+    let mut capacity = 0_u8;
+    // SAFETY: reads a 3-bit eFuse field into a byte.
+    let read = unsafe {
+        sys::esp_efuse_read_field_blob(core::ptr::addr_of_mut!(sys::ESP_EFUSE_FLASH_CAP).cast(), (&raw mut capacity).cast(), 3)
+    };
+    if read == sys::ESP_OK && capacity != 0 { "supermini" } else { "devkitc" }
+}
+/// The S2 Mini is the S2 board the page draws.
+#[cfg(esp32s2)]
+fn guessed_board() -> &'static str {
+    "s2mini"
+}
+#[cfg(esp32p4)]
+fn guessed_board() -> &'static str {
+    "other"
 }
 
 /// Why the unit last started: `power-on`, or a crash, a watchdog or a brownout.

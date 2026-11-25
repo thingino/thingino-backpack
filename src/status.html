@@ -539,7 +539,6 @@ function pinTable(p, rm) {
 
 function drawBoard() {
   const key = $('board').value;
-  try { localStorage.setItem('backpack-board', key); } catch (e) { /* private mode */ }
   const rm = roles(info.pins);
   const b = BOARDS[key];
   if (!b) { $('board-svg').innerHTML = '<p class="muted">No drawing for this board yet: the table below lists every pin.</p>'; return; }
@@ -722,10 +721,12 @@ async function init() {
   const sel = $('board');
   for (const [k, b] of Object.entries(BOARDS)) if (b.chip === info.chip) sel.add(new Option(b.name, k));
   sel.add(new Option('Other board', 'other'));
-  let saved = null;
-  try { saved = localStorage.getItem('backpack-board'); } catch (e) { /* private mode */ }
-  if (saved && [...sel.options].some((o) => o.value === saved)) sel.value = saved;
-  sel.onchange = drawBoard;
+  // The unit keeps the board, set here or guessed from its chip, for every browser.
+  if ([...sel.options].some((o) => o.value === info.board)) sel.value = info.board;
+  sel.onchange = async () => {
+    drawBoard();
+    await act('/api/board?board=' + encodeURIComponent(sel.value));
+  };
   await loadUarts();
   let tab = location.hash.slice(1);
   try { tab = tab || localStorage.getItem('backpack-tab'); } catch (e) { /* private mode */ }

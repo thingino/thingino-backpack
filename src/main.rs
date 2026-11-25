@@ -182,6 +182,7 @@ fn run() -> Result<(), String> {
     let (vcc, hold) = (peripherals.pins.gpio32, peripherals.pins.gpio53);
     let host = UsbHost::install().map_err(|err| err.to_string())?;
     let camera = camera::start(power, boot, bootsel, host.clone(), nvs.clone())?;
+    let status_nvs = nvs.clone();
     let uarts = console::settings(&nvs);
     let mut lines = vec![console::line(0, peripherals.uart1, tx, rx, uarts.bauds[0])?];
     if uarts.extras() {
@@ -218,7 +219,7 @@ fn run() -> Result<(), String> {
     }
     console::start(lines, Arc::clone(&camera))?;
     // Findable as a camera is: the app's hub lists it and opens the page on port 80.
-    let status = status::start(&hostname, camera, settings)?;
+    let status = status::start(&hostname, camera, settings, status_nvs)?;
     memory_report("after the network and USB host");
 
     // The daemon's operations are deep async state machines, and a transfer blocks the

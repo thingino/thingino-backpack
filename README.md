@@ -215,7 +215,9 @@ and restarts into the setup portal. Erasing the NVS partition (`esptool.py erase
 - **Flash chip**: the flashrom command, VCC and HOLD, and the clip's wiring.
 - **Wiring**: the board with the pins in use marked, for the DevKitC-1 and its CH343
   copies, the S3 Super Mini, the XIAO ESP32S3 and the S2 Mini, and a table of them for any
-  board.
+  board. The unit guesses its board from the chip (an S3 with flash in its package is a
+  Super Mini); a board picked here is kept on the unit, for every browser, and
+  `curl -X POST 'http://<host>.local/api/board?board=xiao'` does the same.
 - **Settings**: the UARTs, BOOTSEL and the USB port, the Wi-Fi link and TX power, and
   firmware updates.
 
